@@ -177,15 +177,122 @@ export class Orchestrator {
     this.subscribe('research.requested', async (event) => {
       const result = await this.researcher.execute(event.payload as any, event.correlationId);
       if (result.success && result.data) {
-        await this.publish('content.requested', {
-          researchId: result.data.id,
-          topic: result.data.topic,
-          targetFormat: 'short_tip',
-        }, event.correlationId);
+        await this.publish(
+          'content.requested',
+          {
+            researchId: result.data.id,
+            topic: result.data.topic,
+            summary: result.data.summary,
+            keyTakeaways: result.data.keyTakeaways,
+            suggestedSources: result.data.suggestedSources,
+            relevanceScore: result.data.relevanceScore,
+            targetFormat: 'short_tip',
+          },
+          event.correlationId
+        );
       }
     });
 
-    // 2. Incident created -> repair agent evaluation
+    // 2. Content requested -> strategist evaluation -> writer draft generation
+    this.subscribe('content.requested', async (event) => {
+      const contentReq = event.payload as any;
+      const researchOutput: any = {
+        id: contentReq.researchId || `res_${Date.now()}`,
+        topic: contentReq.topic,
+        summary: contentReq.summary || `Research context for ${contentReq.topic}`,
+        keyTakeaways: contentReq.keyTakeaways || [],
+        suggestedSources: contentReq.suggestedSources || [],
+        relevanceScore: contentReq.relevanceScore || 0.85,
+      };
+
+      const strategyResult = await this.strategist.execute(researchOutput, event.correlationId);
+      if (strategyResult.success && strategyResult.data && strategyResult.data.shouldPublish) {
+        const writerResult = await this.writer.execute(
+          {
+            topic: researchOutput.topic,
+            summary: researchOutput.summary,
+            decision: strategyResult.data,
+          },
+          event.correlationId
+        );
+
+        if (writerResult.success && writerResult.data) {
+          await this.publish('content.generated', writerResult.data, event.correlationId);
+        }
+      }
+    });
+
+    // 3. Content generated -> fact checker verification
+    this.subscribe('content.generated', async (event) => {
+      const generatedDraft = event.payload as any;
+      const checkResult = await this.factChecker.execute(generatedDraft, event.correlationId);
+      if (checkResult.success && checkResult.data) {
+        await this.publish(
+          'content.checked',
+          {
+            ...checkResult.data,
+            draftText: generatedDraft.draftText,
+            topic: generatedDraft.topic,
+            suggestedTags: generatedDraft.suggestedTags,
+            sources: generatedDraft.sources,
+          },
+          event.correlationId
+        );
+
+        if (checkResult.data.passed) {
+          await this.publish(
+            'content.approved',
+            {
+              contentId: checkResult.data.contentId,
+              approvedBy: 'auto_eval:fact_checker',
+              approvedAt: Date.now(),
+              topic: generatedDraft.topic,
+              formattedText: generatedDraft.draftText,
+              channelId: this.env.TELEGRAM_CHANNEL_ID || '@techpluseai',
+            },
+            event.correlationId
+          );
+        }
+      }
+    });
+
+    // 4. Content approved -> publisher agent (with test mode safety)
+    this.subscribe('content.approved', async (event) => {
+      const approvedContent = event.payload as any;
+      const channelId = approvedContent.channelId || this.env.TELEGRAM_CHANNEL_ID || '@techpluseai';
+
+      const publishResult = await this.publisher.execute(
+        {
+          contentId: approvedContent.contentId,
+          channelId,
+          formattedText: approvedContent.formattedText,
+          isManualTest: false,
+        },
+        event.correlationId
+      );
+
+      // Publish content.published event with result metadata
+      await this.publish(
+        'content.published',
+        {
+          contentId: approvedContent.contentId,
+          messageId: publishResult.data?.messageId ?? 0,
+          channelId,
+          publishedAt: publishResult.data?.publishedAt ?? Date.now(),
+          status: publishResult.success ? 'published' : 'blocked_by_safety_policy',
+          testModeActive: Boolean(publishResult.metadata?.testModeActive),
+        },
+        event.correlationId
+      );
+    });
+
+    // 5. Content published -> analyst agent performance tracking
+    this.subscribe('content.published', async (event) => {
+      const publishedPayload = event.payload as any;
+      await this.analyst.execute({ channelId: publishedPayload.channelId }, event.correlationId);
+    });
+
+    // 6. Incident created -> repair agent evaluation
     this.subscribe('incident.created', async (event) => {
       await this.repairAgent.execute({ incident: event.payload as Incident }, event.correlationId);
     });

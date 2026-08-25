@@ -46,19 +46,33 @@ describe('Orchestrator', () => {
     expect(customHandler).toHaveBeenCalledTimes(1);
   });
 
-  it('should route research.requested to researcher and chain to content.requested', async () => {
-    const orchestrator = new Orchestrator();
-    const contentRequestedSpy = vi.fn();
+  it('should route research.requested through the entire agent pipeline to content.published in test mode', async () => {
+    const orchestrator = new Orchestrator(undefined, undefined, { TELEGRAM_TEST_MODE: true });
+    const publishedEvents: string[] = [];
 
-    orchestrator.subscribe('content.requested', contentRequestedSpy);
+    orchestrator.subscribe('research.requested', () => { publishedEvents.push('research.requested'); });
+    orchestrator.subscribe('content.requested', () => { publishedEvents.push('content.requested'); });
+    orchestrator.subscribe('content.generated', () => { publishedEvents.push('content.generated'); });
+    orchestrator.subscribe('content.checked', () => { publishedEvents.push('content.checked'); });
+    orchestrator.subscribe('content.approved', () => { publishedEvents.push('content.approved'); });
+    orchestrator.subscribe('content.published', () => { publishedEvents.push('content.published'); });
 
     await orchestrator.publish('research.requested', {
       niche: 'AI + technology + automation',
       topic: 'Edge Compute LLMs',
     });
 
-    expect(contentRequestedSpy).toHaveBeenCalledTimes(1);
-    expect(contentRequestedSpy.mock.calls[0][0].payload.topic).toBe('Edge Compute LLMs');
+    expect(publishedEvents).toContain('research.requested');
+    expect(publishedEvents).toContain('content.requested');
+    expect(publishedEvents).toContain('content.generated');
+    expect(publishedEvents).toContain('content.checked');
+    expect(publishedEvents).toContain('content.approved');
+    expect(publishedEvents).toContain('content.published');
+    expect(publishedEvents.length).toBe(6);
+
+    const status = orchestrator.getStatus();
+    expect(status.processedEventsCount).toBe(6);
+    expect(status.recentEvents[0].type).toBe('content.published');
   });
 
   it('should capture handler failures as incidents without crashing orchestrator', async () => {

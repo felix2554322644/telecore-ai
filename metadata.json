@@ -1,0 +1,6 @@
+{
+  "name": "Autonomous Telegram Channel Manager Foundation",
+  "description": "Production-ready foundation for an autonomous AI-powered Telegram channel manager on Cloudflare Workers TypeScript architecture.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,44 @@
+/**
+ * Cloudflare Workers Configuration
+ * TeleCore AI - Autonomous Telegram Channel Manager (Foundation Phase)
+ * Target: $0/month Free Tier
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "telecore-ai",
+  "main": "src/index.ts",
+  "compatibility_date": "2024-09-23",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+
+  // Non-sensitive runtime variables (safe in repository)
+  "vars": {
+    "ENVIRONMENT": "production",
+    "LOG_LEVEL": "info",
+    "APP_URL": "",
+    "TELEGRAM_CHANNEL_ID": "",
+    "TELEGRAM_TEST_MODE": "true"
+  },
+
+  // Required Production Secrets (Configured via `wrangler secret put <NAME>` in Cloudflare):
+  // - GEMINI_API_KEY
+  // - TELEGRAM_BOT_TOKEN
+  // - TELEGRAM_WEBHOOK_SECRET
+  // - ADMIN_SECRET
+
+  // Optional: Cloudflare KV Storage Namespace (Free Tier: 100k reads/day, 1k writes/day)
+  // Create using: wrangler kv:namespace create STORAGE_KV
+  // "kv_namespaces": [
+  //   {
+  //     "binding": "STORAGE_KV",
+  //     "id": "<YOUR_KV_NAMESPACE_ID>",
+  //     "preview_id": "<YOUR_PREVIEW_KV_NAMESPACE_ID>"
+  //   }
+  // ],
+
+  // Observability & Logs
+  "observability": {
+    "enabled": true
+  }
+}

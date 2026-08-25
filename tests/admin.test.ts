@@ -78,4 +78,35 @@ describe('Admin Endpoints & Security', () => {
     const data = await response.json();
     expect(data.error).toContain('HTTPS');
   });
+
+  it('should reject GET /api/admin/run-test with invalid or missing secret', async () => {
+    // Missing secret
+    const reqMissing = new Request('https://telecore.internal/api/admin/run-test', {
+      method: 'GET',
+    });
+    const resMissing = await worker.fetch(reqMissing, baseEnv);
+    expect(resMissing.status).toBe(401);
+
+    // Invalid secret
+    const reqInvalid = new Request('https://telecore.internal/api/admin/run-test?secret=wrong_secret', {
+      method: 'GET',
+    });
+    const resInvalid = await worker.fetch(reqInvalid, baseEnv);
+    expect(resInvalid.status).toBe(401);
+  });
+
+  it('should execute pipeline test on GET /api/admin/run-test with valid secret query parameter', async () => {
+    const request = new Request('https://telecore.internal/api/admin/run-test?secret=correct_admin_secret_999', {
+      method: 'GET',
+    });
+
+    const response = await worker.fetch(request, baseEnv);
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.ok).toBe(true);
+    expect(data.testModeActive).toBe(true);
+    expect(data.autonomousPublishingAllowed).toBe(false);
+    expect(data.event.type).toBe('research.requested');
+    expect(data.orchestrator.processedEventsCount).toBeGreaterThanOrEqual(1);
+  });
 });

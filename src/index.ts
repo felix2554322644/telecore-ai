@@ -15,6 +15,7 @@ import { TelegramWebhookHandler } from './telegram/webhook.ts';
 import { Env, EventType, ExecutionContext } from './types/index.ts';
 import { formatSafeErrorResponse, NotFoundError, UnauthorizedError } from './utils/errors.ts';
 import { Logger } from './utils/logger.ts';
+import { timingSafeEqual } from './utils/security.ts';
 
 const logger = new Logger('WorkerEntry');
 const healthService = new HealthService();
@@ -334,6 +335,49 @@ export default {
           ok: true,
           message: `Event '${targetType}' processed successfully`,
           event,
+          orchestrator: app.orchestrator.getStatus(),
+        });
+      }
+
+      // ----------------------------------------------------------------------
+      // 11. Temporary Diagnostic Route: GET /api/admin/run-test
+      // TODO: TEMPORARY ENDPOINT - REMOVE AFTER MOBILE BROWSER TESTING IS COMPLETED
+      // Allows owner to trigger existing deterministic pipeline test from browser without terminal access
+      // ----------------------------------------------------------------------
+      if (method === 'GET' && pathname === '/api/admin/run-test') {
+        const providedSecret = url.searchParams.get('secret');
+
+        if (
+          !providedSecret ||
+          !env.ADMIN_SECRET ||
+          env.ADMIN_SECRET.trim().length === 0 ||
+          !timingSafeEqual(providedSecret.trim(), env.ADMIN_SECRET.trim())
+        ) {
+          throw new UnauthorizedError('Valid ADMIN_SECRET query parameter "secret" is required.');
+        }
+
+        // Execute existing deterministic pipeline test event (research.requested -> researcher -> content.requested)
+        const targetType: EventType = 'research.requested';
+        const payload = {
+          niche: 'AI + technology + automation',
+          topic: 'Autonomous Cloudflare Worker Architecture',
+          isPipelineTest: true,
+        };
+
+        const event = await app.orchestrator.publish(targetType, payload);
+
+        return jsonResponse({
+          ok: true,
+          message: `Pipeline test event '${targetType}' triggered successfully`,
+          testModeActive: isTestMode(env),
+          autonomousPublishingAllowed: false,
+          event: {
+            id: event.id,
+            type: event.type,
+            timestamp: event.timestamp,
+            correlationId: event.correlationId,
+            payload: event.payload,
+          },
           orchestrator: app.orchestrator.getStatus(),
         });
       }

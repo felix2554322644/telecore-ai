@@ -37,7 +37,7 @@ export interface ITelegramClient {
   verifyChannelAccess(channelId?: string | number): Promise<TelegramChannelVerificationResult>;
 }
 
-export type FetchFn = typeof fetch;
+export type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 export class TelegramClient implements ITelegramClient {
   private botToken?: string;
@@ -46,11 +46,13 @@ export class TelegramClient implements ITelegramClient {
 
   constructor(
     botToken?: string,
-    customFetch: FetchFn = fetch,
+    customFetch?: FetchFn,
     apiBaseUrl = 'https://api.telegram.org'
   ) {
     this.botToken = botToken?.trim();
-    this.customFetch = customFetch;
+    this.customFetch = customFetch
+      ? (input, init) => customFetch(input, init)
+      : (input, init) => fetch(input, init);
     this.apiBaseUrl = apiBaseUrl.replace(/\/+$/, '');
   }
 

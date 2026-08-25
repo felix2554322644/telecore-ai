@@ -180,4 +180,26 @@ describe('Telegram Client', () => {
     expect(report.publishing).toBe('available');
     expect(report.canPostMessages).toBe(true);
   });
+
+  it('should preserve native fetch this-context and not cause Illegal invocation error', async () => {
+    const mockUser = { id: 999, is_bot: true, first_name: 'NativeBot', username: 'native_bot' };
+
+    // Simulate Cloudflare Workers workerd native fetch which strictly validates receiver this
+    function nativeStrictFetch(this: unknown, _input: RequestInfo | URL, _init?: RequestInit): Promise<Response> {
+      if (this !== undefined && this !== globalThis) {
+        throw new TypeError('Illegal invocation: function called with incorrect "this" reference. See https://developers.cloudflare.com/workers/observability/errors/#illegal-invocation-errors for details.');
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify({ ok: true, result: mockUser }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+    }
+
+    const client = new TelegramClient('test_token', nativeStrictFetch as any);
+    const user = await client.getMe();
+    expect(user.id).toBe(999);
+    expect(user.username).toBe('native_bot');
+  });
 });

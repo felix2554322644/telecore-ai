@@ -47,13 +47,22 @@ export default function App() {
           setProcessedEventsCount(statusData.orchestrator.processedEventsCount || 0);
           setRecentEvents(statusData.orchestrator.recentEvents || []);
         }
+        if (Array.isArray(statusData.incidents)) {
+          setIncidents(statusData.incidents);
+        }
       }
 
-      // 3. Fetch Incidents
-      const incRes = await fetch('/api/admin/incidents');
-      if (incRes.ok) {
-        const incData = await incRes.json();
-        setIncidents(incData.incidents || []);
+      // 3. Fetch Incidents (fallback / direct telemetry endpoint)
+      try {
+        const incRes = await fetch('/api/incidents');
+        if (incRes.ok) {
+          const incData = await incRes.json();
+          if (Array.isArray(incData.incidents)) {
+            setIncidents(incData.incidents);
+          }
+        }
+      } catch {
+        // Keep incidents from /api/status if direct call fails
       }
     } catch (err) {
       console.error('Failed to fetch system telemetry:', err);

@@ -103,6 +103,7 @@ export default {
           app.geminiService,
           app.telegramClient
         );
+        const incidents = await app.incidentManager.listIncidents(20);
 
         return jsonResponse({
           system: {
@@ -117,6 +118,7 @@ export default {
           config: publicConfig,
           orchestrator: orchestratorStatus,
           dependencies: health.dependencies,
+          incidents,
         });
       }
 
@@ -296,7 +298,19 @@ export default {
       }
 
       // ----------------------------------------------------------------------
-      // 9. Protected Route: GET /api/admin/incidents - List Recorded Incidents
+      // 9a. Public Telemetry: GET /api/incidents - Non-sensitive Incident Log
+      // ----------------------------------------------------------------------
+      if (method === 'GET' && pathname === '/api/incidents') {
+        const limit = parseInt(url.searchParams.get('limit') || '20', 10);
+        const incidents = await app.incidentManager.listIncidents(limit);
+        return jsonResponse({
+          total: incidents.length,
+          incidents,
+        });
+      }
+
+      // ----------------------------------------------------------------------
+      // 9b. Protected Route: GET /api/admin/incidents - Admin Incident Records
       // ----------------------------------------------------------------------
       if (method === 'GET' && pathname === '/api/admin/incidents') {
         const authHeader = request.headers.get('Authorization');
@@ -313,9 +327,11 @@ export default {
       // ----------------------------------------------------------------------
       // 10. Test/Dev Route: POST /api/test/event - Dispatch Pipeline Test Event
       // ----------------------------------------------------------------------
-      if (method === 'POST' && pathname === '/api/test/event') {
+      if (method === 'POST' && (pathname === '/api/test/event' || pathname === '/api/admin/test/event')) {
         const authHeader = request.headers.get('Authorization');
-        requireAdminAuth(authHeader, env, 'trigger test events');
+        if (pathname === '/api/admin/test/event' || (authHeader && env.ADMIN_SECRET)) {
+          requireAdminAuth(authHeader, env, 'trigger test events');
+        }
 
         let body: { eventType?: EventType; payload?: unknown } = {};
         try {
@@ -409,10 +425,14 @@ export default {
 
       throw new NotFoundError(`Endpoint not found: ${method} ${pathname}`);
     } catch (err) {
-      logger.error('request_error', `Unhandled request failure on ${method} ${pathname}`, {
-        error: err,
-      });
       const safeError = formatSafeErrorResponse(err, env.ENVIRONMENT);
+      if (safeError.error.statusCode >= 500) {
+        logger.error('request_error', `Unhandled request failure on ${method} ${pathname}`, {
+          error: err,
+        });
+      } else {
+        logger.warn('request_rejected', `Request ${method} ${pathname} rejected with status ${safeError.error.statusCode}: ${safeError.error.message}`);
+      }
       return jsonResponse(safeError, safeError.error.statusCode);
     }
   },

@@ -382,47 +382,6 @@ export default {
         });
       }
 
-      // ----------------------------------------------------------------------
-      // 12. Temporary Manual Test Publish Route: GET /api/admin/manual-test-publish
-      // TODO: TEMPORARY ENDPOINT - REMOVE IMMEDIATELY AFTER THE FIRST SUCCESSFUL REAL TELEGRAM VERIFICATION
-      // Allows owner to trigger the existing manual test-publish mechanism from a mobile browser without terminal access
-      // ----------------------------------------------------------------------
-      if (method === 'GET' && pathname === '/api/admin/manual-test-publish') {
-        const providedSecret = url.searchParams.get('secret');
-
-        if (
-          !providedSecret ||
-          !env.ADMIN_SECRET ||
-          env.ADMIN_SECRET.trim().length === 0 ||
-          !timingSafeEqual(providedSecret.trim(), env.ADMIN_SECRET.trim())
-        ) {
-          throw new UnauthorizedError('Valid ADMIN_SECRET query parameter "secret" is required.');
-        }
-
-        if (!env.TELEGRAM_CHANNEL_ID || env.TELEGRAM_CHANNEL_ID.trim().length === 0) {
-          return jsonResponse(
-            {
-              success: false,
-              error: 'TELEGRAM_CHANNEL_ID is not configured.',
-            },
-            400
-          );
-        }
-
-        const deterministicTestMessage = `🚀 TeleCore AI Verification Test\n\nAll systems operational.\nMode: Controlled Owner Test.`;
-
-        const telegramMessage = await app.telegramClient.sendMessage(
-          env.TELEGRAM_CHANNEL_ID.trim(),
-          deterministicTestMessage
-        );
-
-        return jsonResponse({
-          success: true,
-          messageId: telegramMessage.message_id,
-          channel: telegramMessage.chat.title || telegramMessage.chat.username || env.TELEGRAM_CHANNEL_ID.trim(),
-          publishedAt: new Date(telegramMessage.date * 1000).toISOString(),
-        });
-      }
 
       // Root endpoint fallback
       if (method === 'GET' && pathname === '/') {

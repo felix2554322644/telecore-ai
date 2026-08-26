@@ -98,7 +98,7 @@ export default {
       // 2. GET /api/status - Non-sensitive Architecture and Status Overview
       // ----------------------------------------------------------------------
       if (method === 'GET' && (pathname === '/api/status' || pathname === '/status')) {
-        const publicConfig = getPublicConfig(env);
+        const publicConfig = getPublicConfig(env, request.url);
         const orchestratorStatus = app.orchestrator.getStatus();
         const health = await healthService.getHealthReport(
           env,
@@ -271,7 +271,10 @@ export default {
           // body is optional
         }
 
-        const targetUrl = (body.webhookUrl || (env.APP_URL ? `${env.APP_URL.replace(/\/+$/, '')}/webhooks/telegram` : '')).trim();
+        const defaultTargetUrl = env.APP_URL
+          ? `${env.APP_URL.replace(/\/+$/, '')}/webhooks/telegram`
+          : (url.origin.startsWith('https://') ? `${url.origin}/webhooks/telegram` : '');
+        const targetUrl = (body.webhookUrl || defaultTargetUrl).trim();
 
         if (!targetUrl || !targetUrl.startsWith('https://')) {
           return jsonResponse({
@@ -463,7 +466,7 @@ export default {
 
       // Root endpoint fallback
       if (method === 'GET' && pathname === '/') {
-        const publicConfig = getPublicConfig(env);
+        const publicConfig = getPublicConfig(env, request.url);
         return jsonResponse({
           service: 'TeleCore AI - Autonomous Telegram Channel Manager',
           phase: 'Telegram Integration & Foundation Phase (Phase 6: Shadow Mode Active)',

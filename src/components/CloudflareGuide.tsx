@@ -34,7 +34,9 @@ export const CloudflareGuide: React.FC = () => {
           <pre className="p-2 rounded bg-slate-950 text-[10px] font-mono text-emerald-400 overflow-x-auto">
 {`wrangler secret put TELEGRAM_BOT_TOKEN
 wrangler secret put TELEGRAM_WEBHOOK_SECRET
-wrangler secret put GEMINI_API_KEY`}
+wrangler secret put GEMINI_API_KEY
+wrangler secret put ADMIN_SECRET
+wrangler secret put TELEGRAM_CHANNEL_ID`}
           </pre>
         </div>
 

@@ -13,11 +13,12 @@
   ],
 
   // Non-sensitive runtime variables (safe in repository)
+  // NOTE: TELEGRAM_CHANNEL_ID, APP_URL, and secrets are configured via Cloudflare Dashboard
+  // (Settings > Variables and Secrets) or `wrangler secret put`. Do NOT place empty string
+  // placeholders here, as wrangler deployment from GitHub will overwrite dashboard variables.
   "vars": {
     "ENVIRONMENT": "production",
     "LOG_LEVEL": "info",
-    "APP_URL": "",
-    "TELEGRAM_CHANNEL_ID": "",
     "TELEGRAM_TEST_MODE": "true"
   },
 

@@ -68,4 +68,16 @@ describe('Configuration Layer', () => {
     expect(isAuthorizedAdmin(null, secret)).toBe(false);
     expect(isAuthorizedAdmin('Bearer ultra_safe_admin_token_2026', undefined)).toBe(false);
   });
+
+  it('should dynamically derive appUrl from incoming request origin if APP_URL is not set', () => {
+    const envWithoutAppUrl: Partial<Env> = {
+      ENVIRONMENT: 'production',
+      TELEGRAM_CHANNEL_ID: '@dynamic_channel',
+    };
+
+    const publicConfig = getPublicConfig(envWithoutAppUrl, 'https://telecore-ai.workers.dev/api/status');
+    expect(publicConfig.appUrl).toBe('https://telecore-ai.workers.dev');
+    expect(publicConfig.channelId).toBe('@dynamic_channel');
+    expect(publicConfig.channelIdConfigured).toBe(true);
+  });
 });

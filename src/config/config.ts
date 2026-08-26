@@ -64,14 +64,25 @@ export function isAutonomousPublishingAllowed(env: Partial<Env>): boolean {
 /**
  * Extract non-sensitive public configuration
  */
-export function getPublicConfig(env: Partial<Env>): PublicConfig {
+export function getPublicConfig(env: Partial<Env>, reqUrl?: string): PublicConfig {
   const testMode = isTestMode(env);
   const channelId = env.TELEGRAM_CHANNEL_ID?.trim();
+  let appUrl = env.APP_URL?.trim() || '';
+
+  // Gracefully derive appUrl from the active request URL if APP_URL was not explicitly set in bindings
+  if (!appUrl && reqUrl) {
+    try {
+      const parsed = new URL(reqUrl);
+      appUrl = parsed.origin;
+    } catch {
+      // Ignore invalid URL
+    }
+  }
 
   return {
     environment: env.ENVIRONMENT || 'development',
     logLevel: env.LOG_LEVEL || 'info',
-    appUrl: env.APP_URL || '',
+    appUrl,
     channelId: channelId || undefined,
     channelIdConfigured: Boolean(channelId && channelId.length > 0),
     telegramConfigured: Boolean(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_BOT_TOKEN.trim().length > 0),

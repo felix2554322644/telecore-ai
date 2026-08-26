@@ -10,6 +10,7 @@ import { CandidateManager } from './health/candidates.ts';
 import { HealthService } from './health/health.ts';
 import { IncidentManager } from './health/incidents.ts';
 import { Orchestrator } from './orchestrator/orchestrator.ts';
+import { IntelligentScheduler } from './scheduler/intelligentScheduler.ts';
 import { createStorage } from './storage/storage.ts';
 import { TelegramClient } from './telegram/client.ts';
 import { TelegramWebhookHandler } from './telegram/webhook.ts';
@@ -46,6 +47,13 @@ export function createAppContext(env: Partial<Env>) {
   const geminiService = new GeminiService(env.GEMINI_API_KEY);
   const orchestrator = new Orchestrator(telegramClient, incidentManager, env, candidateManager, geminiService);
   const webhookHandler = new TelegramWebhookHandler(env.TELEGRAM_WEBHOOK_SECRET, orchestrator);
+  const scheduler = new IntelligentScheduler(
+    storage,
+    orchestrator,
+    candidateManager,
+    incidentManager,
+    geminiService
+  );
 
   return {
     storage,
@@ -55,6 +63,7 @@ export function createAppContext(env: Partial<Env>) {
     geminiService,
     orchestrator,
     webhookHandler,
+    scheduler,
   };
 }
 
@@ -109,6 +118,7 @@ export default {
         const incidents = await app.incidentManager.listIncidents(20);
         const candidateStats = await app.candidateManager.getCandidateStats();
         const recentCandidates = await app.candidateManager.listCandidates(5);
+        const schedulerStatus = await app.scheduler.getStatus();
 
         return jsonResponse({
           system: {
@@ -131,6 +141,7 @@ export default {
             stats: candidateStats,
             recent: recentCandidates,
           },
+          scheduler: schedulerStatus,
           dependencies: health.dependencies,
           incidents,
         });
@@ -390,7 +401,45 @@ export default {
       }
 
       // ----------------------------------------------------------------------
-      // 10. Test/Dev Route: POST /api/test/event - Dispatch Pipeline Test Event
+      // 10. Scheduler Telemetry & Trigger Routes
+      // ----------------------------------------------------------------------
+      if (method === 'GET' && (pathname === '/api/scheduler' || pathname === '/api/admin/scheduler')) {
+        const schedulerStatus = await app.scheduler.getStatus();
+        return jsonResponse({
+          ok: true,
+          scheduler: schedulerStatus,
+          shadowMode: true,
+          testModeActive: isTestMode(env),
+        });
+      }
+
+      if (method === 'POST' && (pathname === '/api/scheduler/run' || pathname === '/api/admin/scheduler/run')) {
+        const authHeader = request.headers.get('Authorization');
+        if (pathname.includes('/admin/') || (authHeader && env.ADMIN_SECRET)) {
+          requireAdminAuth(authHeader, env, 'trigger scheduled cycle');
+        }
+
+        const result = await app.scheduler.executeScheduledCycle({
+          isManualTrigger: true,
+          correlationId: `admin_trigger_${Date.now()}`,
+        });
+
+        return jsonResponse({
+          ok: result.success,
+          message: result.success
+            ? `Intelligent shadow cycle executed successfully for topic: "${result.topic}"`
+            : `Scheduled shadow cycle failed: ${result.error}`,
+          topic: result.topic,
+          category: result.category,
+          cycle: result.cycleRecord,
+          shadowMode: true,
+          testModeActive: isTestMode(env),
+          error: result.error,
+        }, result.success ? 200 : 500);
+      }
+
+      // ----------------------------------------------------------------------
+      // 11. Test/Dev Route: POST /api/test/event - Dispatch Pipeline Test Event
       // ----------------------------------------------------------------------
       if (method === 'POST' && (pathname === '/api/test/event' || pathname === '/api/admin/test/event')) {
         const authHeader = request.headers.get('Authorization');
@@ -421,7 +470,7 @@ export default {
       }
 
       // ----------------------------------------------------------------------
-      // 11. Temporary Diagnostic Route: GET /api/admin/run-test
+      // 12. Temporary Diagnostic Route: GET /api/admin/run-test
       // TODO: TEMPORARY ENDPOINT - REMOVE AFTER MOBILE BROWSER TESTING IS COMPLETED
       // Allows owner to trigger existing deterministic pipeline test from browser without terminal access
       // ----------------------------------------------------------------------
@@ -469,7 +518,7 @@ export default {
         const publicConfig = getPublicConfig(env, request.url);
         return jsonResponse({
           service: 'TeleCore AI - Autonomous Telegram Channel Manager',
-          phase: 'Telegram Integration & Foundation Phase (Phase 6: Shadow Mode Active)',
+          phase: 'Telegram Integration & Foundation Phase (Phase 10: Intelligent Scheduling Active)',
           version: publicConfig.version,
           status: 'online',
           testMode: publicConfig.testMode,
@@ -488,6 +537,8 @@ export default {
             'GET  /api/candidates',
             'GET  /api/admin/candidates',
             'GET  /api/admin/candidates/:id',
+            'GET  /api/scheduler',
+            'POST /api/scheduler/run',
             'POST /api/test/event',
           ],
         });
@@ -509,7 +560,7 @@ export default {
 
   /**
    * Cloudflare Worker Cron Trigger Handler
-   * Executes scheduled shadow mode cycle without publishing to Telegram
+   * Executes intelligent topic selection & shadow mode cycle without publishing to Telegram
    */
   async scheduled(event: ScheduledEvent, env: Env, ctx?: ExecutionContext): Promise<void> {
     logger.info('scheduled_trigger_fired', `Cloudflare Worker Cron Trigger fired: ${event.cron}`, {
@@ -518,19 +569,21 @@ export default {
 
     const app = createAppContext(env);
 
-    const payload = {
-      niche: 'AI + technology + automation',
-      topic: 'Latest Developments in Autonomous AI Agents and Edge Infrastructure',
-      sourceHints: ['https://techpluseai.internal/radar'],
-      isScheduledTrigger: true,
-      cron: event.cron,
-    };
-
     try {
-      await app.orchestrator.publish('research.requested', payload, `cron_${event.scheduledTime || Date.now()}`);
-      logger.info('scheduled_pipeline_completed', 'Scheduled shadow pipeline executed successfully');
+      const result = await app.scheduler.executeScheduledCycle({
+        cron: event.cron,
+        scheduledTime: event.scheduledTime,
+      });
+
+      if (result.success) {
+        logger.info('scheduled_pipeline_completed', `Intelligent scheduled shadow pipeline executed successfully: "${result.topic}"`, {
+          context: { topic: result.topic, category: result.category, cycleId: result.cycleRecord.cycleId },
+        });
+      } else {
+        logger.warn('scheduled_pipeline_partial_failure', `Intelligent scheduled cycle completed with status "${result.cycleRecord.status}": ${result.error}`);
+      }
     } catch (err) {
-      logger.error('scheduled_pipeline_failed', 'Scheduled shadow pipeline failed', { error: err });
+      logger.error('scheduled_pipeline_failed', 'Scheduled shadow pipeline encountered critical exception', { error: err });
       await app.incidentManager.recordIncident({
         component: 'Scheduler:AutonomousCron',
         severity: 'high',

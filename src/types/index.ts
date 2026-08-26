@@ -101,7 +101,10 @@ export type EventType =
   | 'incident.created'
   | 'webhook.received'
   | 'telegram.update.received'
-  | 'system.health_checked';
+  | 'system.health_checked'
+  | 'scheduler.cycle_started'
+  | 'scheduler.cycle_completed'
+  | 'scheduler.cycle_failed';
 
 export interface BaseEvent<T = unknown> {
   id: string;
@@ -455,6 +458,51 @@ export interface IStorage {
   set<T = unknown>(key: string, value: T, options?: StorageOptions): Promise<void>;
   delete(key: string): Promise<boolean>;
   list(prefix?: string): Promise<string[]>;
+}
+
+export interface ScheduledCycleRecord {
+  cycleId: string;
+  topic: string;
+  category: string;
+  source: 'gemini_dynamic' | 'cluster_rotation' | 'fallback_recovery';
+  timestamp: number;
+  cron?: string;
+  status: 'success' | 'filtered' | 'failed';
+  rejectionReason?: string;
+  candidateId?: string;
+  correlationId?: string;
+  durationMs?: number;
+}
+
+export interface TopicCluster {
+  id: string;
+  name: string;
+  description: string;
+  sourceHints: string[];
+  topics: string[];
+}
+
+export interface SchedulerState {
+  lastCategoryIndex: number;
+  lastScheduledAt?: number;
+  totalCycles: number;
+  successfulCycles: number;
+  failedCycles: number;
+  recentTopics: ScheduledCycleRecord[];
+  consecutiveFailures: number;
+}
+
+export interface SchedulerStatus {
+  activeCategory: string;
+  nextCategory: string;
+  totalClusters: number;
+  totalCycles: number;
+  successfulCycles: number;
+  failedCycles: number;
+  lastScheduledAt?: number;
+  recentCycles: ScheduledCycleRecord[];
+  avoidedTopicsCount: number;
+  clusters: Array<{ id: string; name: string; topicCount: number }>;
 }
 
 export type {

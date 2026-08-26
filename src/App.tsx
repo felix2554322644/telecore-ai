@@ -9,6 +9,7 @@ import { CloudflareGuide } from './components/CloudflareGuide.tsx';
 import { HealthOverview } from './components/HealthOverview.tsx';
 import { IncidentsViewer } from './components/IncidentsViewer.tsx';
 import { PipelineInspector } from './components/PipelineInspector.tsx';
+import { SchedulerViewer } from './components/SchedulerViewer.tsx';
 import { StatusHeader } from './components/StatusHeader.tsx';
 import { TelegramManager } from './components/TelegramManager.tsx';
 import {
@@ -17,6 +18,7 @@ import {
   HealthReport,
   Incident,
   PublicConfig,
+  SchedulerStatus,
   ShadowCandidate,
 } from './types/index.ts';
 
@@ -29,6 +31,7 @@ export default function App() {
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [candidates, setCandidates] = useState<ShadowCandidate[]>([]);
   const [candidateStats, setCandidateStats] = useState<{ total: number; approved: number; rejected: number } | undefined>(undefined);
+  const [scheduler, setScheduler] = useState<SchedulerStatus | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
   const fetchStatus = async () => {
@@ -56,6 +59,9 @@ export default function App() {
         }
         if (statusData.candidates?.stats) {
           setCandidateStats(statusData.candidates.stats);
+        }
+        if (statusData.scheduler) {
+          setScheduler(statusData.scheduler);
         }
       }
 
@@ -87,6 +93,19 @@ export default function App() {
       } catch {
         // Keep incidents from /api/status if direct call fails
       }
+
+      // 5. Fetch Scheduler status directly if not present
+      try {
+        const schedRes = await fetch('/api/scheduler');
+        if (schedRes.ok) {
+          const schedData = await schedRes.json();
+          if (schedData.scheduler) {
+            setScheduler(schedData.scheduler);
+          }
+        }
+      } catch {
+        // Keep scheduler from /api/status
+      }
     } catch (err) {
       console.error('Failed to fetch system telemetry:', err);
     } finally {
@@ -109,11 +128,24 @@ export default function App() {
       });
 
       const data = await res.json();
-      // Refresh status after trigger
       await fetchStatus();
       return data;
     } catch (err) {
       console.error('Failed to trigger event:', err);
+      throw err;
+    }
+  };
+
+  const handleTriggerScheduledCycle = async () => {
+    try {
+      const res = await fetch('/api/scheduler/run', {
+        method: 'POST',
+      });
+      const data = await res.json();
+      await fetchStatus();
+      return data;
+    } catch (err) {
+      console.error('Failed to trigger scheduled cycle:', err);
       throw err;
     }
   };
@@ -134,6 +166,13 @@ export default function App() {
         <HealthOverview
           dependencies={health?.dependencies}
           config={config}
+        />
+
+        {/* Intelligent Topic Scheduler & Cluster Rotation */}
+        <SchedulerViewer
+          scheduler={scheduler}
+          onRefresh={fetchStatus}
+          onTriggerCycle={handleTriggerScheduledCycle}
         />
 
         {/* Telegram Integration & Controlled Test Publisher */}

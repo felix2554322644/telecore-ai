@@ -69,7 +69,7 @@ export class Orchestrator {
     this.researcher = new ResearcherAgent(geminiService);
     this.strategist = new StrategistAgent();
     this.writer = new WriterAgent();
-    this.factChecker = new FactCheckerAgent();
+    this.factChecker = new FactCheckerAgent(geminiService);
     this.publisher = new PublisherAgent(telegramClient, this.env);
     this.analyst = new AnalystAgent();
     this.repairAgent = new RepairAgent();
@@ -250,7 +250,8 @@ export class Orchestrator {
         );
 
         if (checkResult.data.passed) {
-          // Record approved candidate in shadow storage
+          // Record candidate in shadow storage
+          let recordedStatus = 'approved';
           if (this.candidateManager) {
             const candidate = await this.candidateManager.recordCandidate({
               contentId: checkResult.data.contentId,
@@ -260,28 +261,49 @@ export class Orchestrator {
               sources: generatedDraft.sources,
               status: 'approved',
               confidenceScore: checkResult.data.confidenceScore,
+              qualityScore: checkResult.data.qualityScore,
+              qualityBreakdown: checkResult.data.qualityBreakdown,
               claimsVerified: checkResult.data.claimsVerified,
               correlationId: event.correlationId,
             });
             if (candidate) {
+              recordedStatus = candidate.status;
               await this.publish('candidate.recorded', candidate, event.correlationId);
             }
           }
 
-          await this.publish(
-            'content.approved',
-            {
-              contentId: checkResult.data.contentId,
-              approvedBy: 'auto_eval:fact_checker',
-              approvedAt: Date.now(),
-              topic: generatedDraft.topic,
-              formattedText: generatedDraft.draftText,
-              channelId: this.env.TELEGRAM_CHANNEL_ID || '@techpluseai',
-            },
-            event.correlationId
-          );
+          if (recordedStatus === 'approved') {
+            await this.publish(
+              'content.approved',
+              {
+                contentId: checkResult.data.contentId,
+                approvedBy: 'auto_eval:fact_checker',
+                approvedAt: Date.now(),
+                topic: generatedDraft.topic,
+                formattedText: generatedDraft.draftText,
+                channelId: this.env.TELEGRAM_CHANNEL_ID || '@techpluseai',
+                qualityScore: checkResult.data.qualityScore,
+                confidenceScore: checkResult.data.confidenceScore,
+              },
+              event.correlationId
+            );
+          } else {
+            await this.publish(
+              'content.rejected',
+              {
+                contentId: checkResult.data.contentId,
+                topic: generatedDraft.topic,
+                reason: 'CandidateManager duplicate similarity or threshold guard rejected draft',
+                rejectionCode: 'DUPLICATE_TOPIC_SIMILARITY',
+                confidenceScore: checkResult.data.confidenceScore,
+                qualityScore: checkResult.data.qualityScore,
+              },
+              event.correlationId
+            );
+          }
         } else {
           // Record rejected candidate in shadow storage
+          const reason = checkResult.data.rejectionReason || checkResult.data.notes || 'Fact-checking confidence threshold not satisfied';
           if (this.candidateManager) {
             const candidate = await this.candidateManager.recordCandidate({
               contentId: checkResult.data.contentId,
@@ -290,8 +312,11 @@ export class Orchestrator {
               suggestedTags: generatedDraft.suggestedTags,
               sources: generatedDraft.sources,
               status: 'rejected',
-              rejectionReason: checkResult.data.notes || 'Fact-checking confidence threshold not satisfied',
+              rejectionReason: reason,
+              rejectionCode: checkResult.data.rejectionCode,
               confidenceScore: checkResult.data.confidenceScore,
+              qualityScore: checkResult.data.qualityScore,
+              qualityBreakdown: checkResult.data.qualityBreakdown,
               claimsVerified: checkResult.data.claimsVerified,
               correlationId: event.correlationId,
             });
@@ -305,8 +330,10 @@ export class Orchestrator {
             {
               contentId: checkResult.data.contentId,
               topic: generatedDraft.topic,
-              reason: checkResult.data.notes || 'Fact-checking confidence threshold not satisfied',
+              reason,
+              rejectionCode: checkResult.data.rejectionCode,
               confidenceScore: checkResult.data.confidenceScore,
+              qualityScore: checkResult.data.qualityScore,
             },
             event.correlationId
           );

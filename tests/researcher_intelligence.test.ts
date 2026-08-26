@@ -49,6 +49,20 @@ describe('Phase 8: Autonomous Research Intelligence', () => {
         topic: params.topic || result.topic,
       };
     },
+    auditFactCheck: async () => ({
+      passed: true,
+      confidenceScore: 0.95,
+      qualityScore: 0.92,
+      claimsVerified: [],
+      qualityBreakdown: {
+        factualAccuracy: 0.95,
+        technicalDepth: 0.90,
+        actionableUtility: 0.90,
+        clarityAndTone: 0.92,
+        sourceGrounding: 0.95,
+      },
+      notes: 'Mock audit passed',
+    }),
     generateTextPlaceholder: async () => 'Placeholder text response',
   });
 

@@ -6,7 +6,7 @@
  */
 
 import { GoogleGenAI, Type } from '@google/genai';
-import { DependencyHealth } from '../types/index.ts';
+import { DependencyHealth, QualityBreakdown } from '../types/index.ts';
 import { GeminiApiError } from '../utils/errors.ts';
 import { Logger } from '../utils/logger.ts';
 
@@ -28,10 +28,29 @@ export interface GeminiResearchResult {
   category?: string;
 }
 
+export interface GeminiAuditParams {
+  topic: string;
+  draftText: string;
+  sources?: string[];
+  suggestedTags?: string[];
+}
+
+export interface GeminiAuditResult {
+  passed: boolean;
+  confidenceScore: number;
+  qualityScore: number;
+  claimsVerified: Array<{ claim: string; verified: boolean; citation?: string; critique?: string }>;
+  rejectionReason?: string;
+  rejectionCode?: string;
+  qualityBreakdown: QualityBreakdown;
+  notes: string;
+}
+
 export interface IGeminiService {
   isConfigured(): boolean;
   checkHealth(): Promise<DependencyHealth>;
   performResearch(params: GeminiResearchParams): Promise<GeminiResearchResult>;
+  auditFactCheck(params: GeminiAuditParams): Promise<GeminiAuditResult>;
   generateTextPlaceholder(prompt: string): Promise<string>;
 }
 
@@ -229,6 +248,179 @@ Synthesize a comprehensive research report:
         throw err;
       }
       throw new GeminiApiError('Gemini research generation failed', {
+        reason: err instanceof Error ? err.message : 'Unknown AI error',
+      });
+    }
+  }
+
+  /**
+   * Performs deep, structured fact-checking and multi-factor quality audit on candidate drafts
+   */
+  public async auditFactCheck(params: GeminiAuditParams): Promise<GeminiAuditResult> {
+    if (!this.isConfigured()) {
+      throw new GeminiApiError('Cannot perform fact-check audit: GEMINI_API_KEY is not configured');
+    }
+
+    const ai = this.getClient();
+    const systemInstruction =
+      'You are the Elite Fact-Checking & Quality Audit Intelligence for TeleCore AI, a premier technical Telegram channel. ' +
+      'Editorial Philosophy: "Technology that matters, explained and made useful." ' +
+      'Strictly evaluate technical accuracy, verified claims, developer utility, and absence of promotional hype or misinformation. ' +
+      'Enforce high standards: if a post contains ungrounded claims, exaggerated claims, or generic fluff, reject it with explicit reasons.';
+
+    const prompt = `Perform a comprehensive fact-check and quality audit on this candidate post:
+Topic: "${params.topic}"
+Draft Content:
+"""
+${params.draftText}
+"""
+Cited Sources: ${params.sources && params.sources.length > 0 ? params.sources.join(', ') : 'None'}
+Suggested Tags: ${params.suggestedTags && params.suggestedTags.length > 0 ? params.suggestedTags.join(', ') : 'None'}
+
+Evaluate the candidate on:
+1. factualAccuracy (0.0 to 1.0): Are technical claims accurate, plausible, and well-grounded?
+2. technicalDepth (0.0 to 1.0): Is the content informative and technically substantial rather than shallow summary?
+3. actionableUtility (0.0 to 1.0): Does it provide clear architectural, engineering, or developer workflow value?
+4. clarityAndTone (0.0 to 1.0): Is the tone objective, crisp, and free from marketing fluff or sensationalism?
+5. sourceGrounding (0.0 to 1.0): Are reputable references/domains present to support key claims?
+
+Criteria for Passing:
+- confidenceScore >= 0.80
+- qualityScore >= 0.75
+- Zero unverified critical claims
+- No promotional hype or unsubstantiated superlatives
+- All verified claims have citations or rationale.`;
+
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.7-flash',
+        contents: prompt,
+        config: {
+          systemInstruction,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              passed: {
+                type: Type.BOOLEAN,
+                description: 'True if candidate meets all quality, factual, and editorial standards',
+              },
+              confidenceScore: {
+                type: Type.NUMBER,
+                description: 'Factual verification confidence (0.0 - 1.0)',
+              },
+              qualityScore: {
+                type: Type.NUMBER,
+                description: 'Overall aggregate post quality score (0.0 - 1.0)',
+              },
+              claimsVerified: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    claim: { type: Type.STRING },
+                    verified: { type: Type.BOOLEAN },
+                    citation: { type: Type.STRING },
+                    critique: { type: Type.STRING },
+                  },
+                  required: ['claim', 'verified'],
+                },
+                description: 'Detailed list of core technical claims evaluated',
+              },
+              rejectionReason: {
+                type: Type.STRING,
+                description: 'Detailed explanation if candidate failed audit, or empty if passed',
+              },
+              rejectionCode: {
+                type: Type.STRING,
+                description: 'Code e.g. LOW_FACTUAL_ACCURACY, UNVERIFIED_CLAIMS, INSUFFICIENT_TECHNICAL_DEPTH, HYPE_OR_SLOP_DETECTED, INSUFFICIENT_SOURCES, LOW_CONFIDENCE',
+              },
+              qualityBreakdown: {
+                type: Type.OBJECT,
+                properties: {
+                  factualAccuracy: { type: Type.NUMBER },
+                  technicalDepth: { type: Type.NUMBER },
+                  actionableUtility: { type: Type.NUMBER },
+                  clarityAndTone: { type: Type.NUMBER },
+                  sourceGrounding: { type: Type.NUMBER },
+                },
+                required: ['factualAccuracy', 'technicalDepth', 'actionableUtility', 'clarityAndTone', 'sourceGrounding'],
+              },
+              notes: {
+                type: Type.STRING,
+                description: 'Auditor notes and feedback for editorial log',
+              },
+            },
+            required: ['passed', 'confidenceScore', 'qualityScore', 'claimsVerified', 'qualityBreakdown', 'notes'],
+          },
+        },
+      });
+
+      const responseText = response.text?.trim();
+      if (!responseText) {
+        throw new GeminiApiError('Gemini returned an empty response for fact-check audit');
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(responseText);
+      } catch (jsonErr) {
+        throw new GeminiApiError('Failed to parse Gemini audit JSON response', {
+          raw: responseText,
+          error: jsonErr instanceof Error ? jsonErr.message : String(jsonErr),
+        });
+      }
+
+      const res = parsed as Partial<GeminiAuditResult>;
+      const qb = res.qualityBreakdown || {
+        factualAccuracy: 0.9,
+        technicalDepth: 0.85,
+        actionableUtility: 0.85,
+        clarityAndTone: 0.9,
+        sourceGrounding: 0.85,
+      };
+
+      const confidenceScore =
+        typeof res.confidenceScore === 'number' && !isNaN(res.confidenceScore)
+          ? Math.max(0, Math.min(1, res.confidenceScore))
+          : 0.88;
+
+      const qualityScore =
+        typeof res.qualityScore === 'number' && !isNaN(res.qualityScore)
+          ? Math.max(0, Math.min(1, res.qualityScore))
+          : 0.86;
+
+      const passed = Boolean(res.passed && confidenceScore >= 0.8 && qualityScore >= 0.75);
+
+      return {
+        passed,
+        confidenceScore,
+        qualityScore,
+        claimsVerified: Array.isArray(res.claimsVerified)
+          ? res.claimsVerified.map((c) => ({
+              claim: String(c.claim || '').trim(),
+              verified: Boolean(c.verified),
+              citation: typeof c.citation === 'string' ? c.citation : undefined,
+              critique: typeof c.critique === 'string' ? c.critique : undefined,
+            }))
+          : [],
+        rejectionReason: !passed ? (res.rejectionReason?.trim() || 'Did not meet quality or confidence thresholds') : undefined,
+        rejectionCode: !passed ? (res.rejectionCode?.trim() || (confidenceScore < 0.8 ? 'LOW_CONFIDENCE' : 'LOW_QUALITY_SCORE')) : undefined,
+        qualityBreakdown: {
+          factualAccuracy: Math.max(0, Math.min(1, qb.factualAccuracy ?? 0.85)),
+          technicalDepth: Math.max(0, Math.min(1, qb.technicalDepth ?? 0.85)),
+          actionableUtility: Math.max(0, Math.min(1, qb.actionableUtility ?? 0.85)),
+          clarityAndTone: Math.max(0, Math.min(1, qb.clarityAndTone ?? 0.85)),
+          sourceGrounding: Math.max(0, Math.min(1, qb.sourceGrounding ?? 0.85)),
+        },
+        notes: res.notes?.trim() || 'Audit completed.',
+      };
+    } catch (err) {
+      logger.error('gemini_audit_failed', 'Failed to execute Gemini audit request', { error: err });
+      if (err instanceof GeminiApiError) {
+        throw err;
+      }
+      throw new GeminiApiError('Gemini fact-check audit failed', {
         reason: err instanceof Error ? err.message : 'Unknown AI error',
       });
     }

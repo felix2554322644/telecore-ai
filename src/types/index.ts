@@ -135,11 +135,23 @@ export interface ContentGeneratedPayload {
   mediaPrompt?: string;
 }
 
+export interface QualityBreakdown {
+  factualAccuracy: number;
+  technicalDepth: number;
+  actionableUtility: number;
+  clarityAndTone: number;
+  sourceGrounding: number;
+}
+
 export interface ContentCheckedPayload {
   contentId: string;
   passed: boolean;
   claimsVerified: Array<{ claim: string; verified: boolean; citation?: string }>;
   confidenceScore: number;
+  qualityScore?: number;
+  qualityBreakdown?: QualityBreakdown;
+  rejectionReason?: string;
+  rejectionCode?: string;
   notes?: string;
 }
 
@@ -151,13 +163,17 @@ export interface ContentApprovedPayload {
   topic?: string;
   formattedText?: string;
   channelId?: string;
+  qualityScore?: number;
+  confidenceScore?: number;
 }
 
 export interface ContentRejectedPayload {
   contentId: string;
   topic: string;
   reason: string;
+  rejectionCode?: string;
   confidenceScore?: number;
+  qualityScore?: number;
 }
 
 export interface ShadowCandidate {
@@ -168,7 +184,10 @@ export interface ShadowCandidate {
   sources: string[];
   status: 'approved' | 'rejected';
   rejectionReason?: string;
+  rejectionCode?: string;
   confidenceScore?: number;
+  qualityScore?: number;
+  qualityBreakdown?: QualityBreakdown;
   claimsVerified?: Array<{ claim: string; verified: boolean; citation?: string }>;
   correlationId?: string;
   timestamp: number;
@@ -437,3 +456,12 @@ export interface IStorage {
   delete(key: string): Promise<boolean>;
   list(prefix?: string): Promise<string[]>;
 }
+
+export type {
+  GeminiAuditParams,
+  GeminiAuditResult,
+  GeminiResearchParams,
+  GeminiResearchResult,
+  IGeminiService,
+} from '../ai/gemini.ts';
+

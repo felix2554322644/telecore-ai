@@ -1,15 +1,23 @@
 /**
  * Autonomous Telegram Channel Manager - Candidate System
  *
- * Captures, stores, and manages generated shadow-mode candidates.
+ * Phase 9: Quality Scoring, Duplicate/Similarity Detection & Fact-Checked Selection
+ * Captures, scores, filters, and retains high-quality shadow-mode candidates.
  * Preserves candidate posts, topics, fact-checking verifications, and
  * approval/rejection outcomes for historical inspection without publishing to Telegram.
  */
 
-import { IStorage, ShadowCandidate } from '../types/index.ts';
+import { IStorage, QualityBreakdown, ShadowCandidate } from '../types/index.ts';
 import { Logger } from '../utils/logger.ts';
 
 const logger = new Logger('CandidateManager');
+
+const STOP_WORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of',
+  'with', 'by', 'from', 'about', 'into', 'over', 'after', 'is', 'are', 'was',
+  'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did',
+  'this', 'that', 'these', 'those', 'it', 'its', 'as', 'how', 'what', 'why',
+]);
 
 export interface RecordCandidateInput {
   contentId?: string;
@@ -19,10 +27,19 @@ export interface RecordCandidateInput {
   sources?: string[];
   status: 'approved' | 'rejected';
   rejectionReason?: string;
+  rejectionCode?: string;
   confidenceScore?: number;
+  qualityScore?: number;
+  qualityBreakdown?: QualityBreakdown;
   claimsVerified?: Array<{ claim: string; verified: boolean; citation?: string }>;
   correlationId?: string;
   metadata?: Record<string, unknown>;
+}
+
+export interface SimilarityMatch {
+  match: ShadowCandidate;
+  topicSimilarity: number;
+  textSimilarity: number;
 }
 
 export class CandidateManager {
@@ -30,21 +47,175 @@ export class CandidateManager {
   private readonly storagePrefix = 'candidate:';
   private inMemoryCandidates: ShadowCandidate[] = [];
 
+  // Configurable thresholds
+  public readonly minConfidenceThreshold = 0.80;
+  public readonly minQualityThreshold = 0.75;
+  public readonly topicSimilarityThreshold = 0.75;
+  public readonly textSimilarityThreshold = 0.70;
+
   constructor(storage: IStorage) {
     this.storage = storage;
   }
 
   /**
-   * Record a new shadow candidate with deduplication safeguards
+   * Tokenize text into normalized significant words
+   */
+  public tokenize(text: string): Set<string> {
+    const words = text
+      .toLowerCase()
+      .replace(/[^\w\s]/g, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length > 0 && !STOP_WORDS.has(w));
+    return new Set(words);
+  }
+
+  /**
+   * Compute Jaccard token similarity between two texts (0.0 to 1.0)
+   */
+  public computeTokenSimilarity(textA: string, textB: string): number {
+    const tokensA = this.tokenize(textA);
+    const tokensB = this.tokenize(textB);
+
+    if (tokensA.size === 0 && tokensB.size === 0) return 1.0;
+    if (tokensA.size === 0 || tokensB.size === 0) return 0.0;
+
+    let intersectionCount = 0;
+    for (const token of tokensA) {
+      if (tokensB.has(token)) {
+        intersectionCount++;
+      }
+    }
+
+    const unionCount = tokensA.size + tokensB.size - intersectionCount;
+    return unionCount > 0 ? Number((intersectionCount / unionCount).toFixed(3)) : 0;
+  }
+
+  /**
+   * Compute Character N-gram (tri-gram) similarity for fuzzy phrase matching
+   */
+  public computeNgramSimilarity(strA: string, strB: string, n = 3): number {
+    const cleanA = strA.toLowerCase().replace(/\s+/g, ' ').trim();
+    const cleanB = strB.toLowerCase().replace(/\s+/g, ' ').trim();
+
+    if (cleanA === cleanB) return 1.0;
+    if (cleanA.length < n || cleanB.length < n) return 0.0;
+
+    const getNgrams = (s: string) => {
+      const set = new Set<string>();
+      for (let i = 0; i <= s.length - n; i++) {
+        set.add(s.substring(i, i + n));
+      }
+      return set;
+    };
+
+    const ngramsA = getNgrams(cleanA);
+    const ngramsB = getNgrams(cleanB);
+
+    let matchCount = 0;
+    for (const ng of ngramsA) {
+      if (ngramsB.has(ng)) matchCount++;
+    }
+
+    const total = ngramsA.size + ngramsB.size - matchCount;
+    return total > 0 ? Number((matchCount / total).toFixed(3)) : 0;
+  }
+
+  /**
+   * Find if a candidate with similar topic or content already exists in recent history
+   */
+  public findSimilarCandidate(
+    topic: string,
+    draftText: string,
+    topicThreshold = this.topicSimilarityThreshold,
+    textThreshold = this.textSimilarityThreshold
+  ): SimilarityMatch | null {
+    for (const existing of this.inMemoryCandidates) {
+      const topicTokenSim = this.computeTokenSimilarity(topic, existing.topic);
+      const topicNgramSim = this.computeNgramSimilarity(topic, existing.topic);
+      const topicSim = Number(Math.max(topicTokenSim, topicNgramSim).toFixed(3));
+
+      const textTokenSim = this.computeTokenSimilarity(draftText, existing.draftText);
+      const textNgramSim = this.computeNgramSimilarity(draftText, existing.draftText);
+      const textSim = Number(Math.max(textTokenSim, textNgramSim).toFixed(3));
+
+      // Match if:
+      // 1. High topic similarity (>= threshold) AND at least moderate text similarity (>= 0.25)
+      // 2. Near-identical topic (>= 0.85)
+      // 3. Duplicate text content (>= textThreshold)
+      const isSimilarTopic = (topicSim >= topicThreshold && textSim >= 0.25) || topicSim >= 0.85;
+      const isSimilarText = textSim >= textThreshold;
+
+      if (isSimilarTopic || isSimilarText) {
+        return {
+          match: existing,
+          topicSimilarity: topicSim,
+          textSimilarity: textSim,
+        };
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Record a new shadow candidate with quality scoring, similarity detection, and deduplication
    */
   public async recordCandidate(input: RecordCandidateInput): Promise<ShadowCandidate> {
-    // Check for duplicate candidate within recent records
-    const isDup = this.isDuplicate(input.topic, input.draftText);
-    if (isDup) {
+    // 1. Check for exact duplicate candidate within recent memory
+    const exactDup = this.isDuplicate(input.topic, input.draftText);
+    if (exactDup) {
       logger.warn('duplicate_candidate_skipped', `Candidate for topic "${input.topic}" matches a recent candidate. Skipping duplicate write.`, {
-        context: { existingId: isDup.id, topic: input.topic },
+        context: { existingId: exactDup.id, topic: input.topic },
       });
-      return isDup;
+      return exactDup;
+    }
+
+    let finalStatus = input.status;
+    let finalRejectionReason = input.rejectionReason;
+    let finalRejectionCode = input.rejectionCode;
+    const metadata: Record<string, unknown> = { ...input.metadata };
+
+    // 2. Enforce confidence threshold guard
+    if (finalStatus === 'approved' && input.confidenceScore !== undefined && input.confidenceScore < this.minConfidenceThreshold) {
+      finalStatus = 'rejected';
+      finalRejectionCode = 'LOW_CONFIDENCE_SCORE';
+      finalRejectionReason = `Rejected: Confidence score (${input.confidenceScore}) is below minimum threshold (${this.minConfidenceThreshold}).`;
+      logger.info('candidate_downgraded_confidence', `Candidate for "${input.topic}" downgraded to rejected due to low confidence`, {
+        context: { confidenceScore: input.confidenceScore, threshold: this.minConfidenceThreshold },
+      });
+    }
+
+    // 3. Enforce quality score threshold guard
+    if (finalStatus === 'approved' && input.qualityScore !== undefined && input.qualityScore < this.minQualityThreshold) {
+      finalStatus = 'rejected';
+      finalRejectionCode = 'LOW_QUALITY_SCORE';
+      finalRejectionReason = `Rejected: Quality score (${input.qualityScore}) is below minimum threshold (${this.minQualityThreshold}).`;
+      logger.info('candidate_downgraded_quality', `Candidate for "${input.topic}" downgraded to rejected due to low quality`, {
+        context: { qualityScore: input.qualityScore, threshold: this.minQualityThreshold },
+      });
+    }
+
+    // 4. Topic and content similarity detection guard for approved posts
+    if (finalStatus === 'approved') {
+      const similar = this.findSimilarCandidate(input.topic, input.draftText);
+      if (similar) {
+        finalStatus = 'rejected';
+        finalRejectionCode = 'DUPLICATE_TOPIC_SIMILARITY';
+        finalRejectionReason = `Rejected as duplicate: ${Math.round(similar.topicSimilarity * 100)}% topic similarity with recent candidate "${similar.match.topic}" (ID: ${similar.match.id}).`;
+        metadata.similarityMatch = {
+          candidateId: similar.match.id,
+          topic: similar.match.topic,
+          topicSimilarity: similar.topicSimilarity,
+          textSimilarity: similar.textSimilarity,
+        };
+        logger.info('candidate_rejected_similarity', `Candidate for "${input.topic}" rejected due to similarity with ${similar.match.id}`, {
+          context: {
+            topic: input.topic,
+            matchedTopic: similar.match.topic,
+            topicSimilarity: similar.topicSimilarity,
+          },
+        });
+      }
     }
 
     const id = input.contentId || `cand_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
@@ -54,13 +225,16 @@ export class CandidateManager {
       draftText: input.draftText,
       suggestedTags: input.suggestedTags || [],
       sources: input.sources || [],
-      status: input.status,
-      rejectionReason: input.rejectionReason,
+      status: finalStatus,
+      rejectionReason: finalRejectionReason,
+      rejectionCode: finalRejectionCode,
       confidenceScore: input.confidenceScore,
+      qualityScore: input.qualityScore,
+      qualityBreakdown: input.qualityBreakdown,
       claimsVerified: input.claimsVerified || [],
       correlationId: input.correlationId,
       timestamp: Date.now(),
-      metadata: input.metadata,
+      metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
     };
 
     this.inMemoryCandidates.unshift(candidate);
@@ -84,6 +258,8 @@ export class CandidateManager {
         candidateId: id,
         status: candidate.status,
         confidenceScore: candidate.confidenceScore,
+        qualityScore: candidate.qualityScore,
+        rejectionCode: candidate.rejectionCode,
       },
     });
 
@@ -144,12 +320,41 @@ export class CandidateManager {
   /**
    * Aggregate candidate metrics
    */
-  public async getCandidateStats(): Promise<{ total: number; approved: number; rejected: number }> {
+  public async getCandidateStats(): Promise<{
+    total: number;
+    approved: number;
+    rejected: number;
+    avgQualityScore?: number;
+    avgConfidenceScore?: number;
+  }> {
     const candidates = await this.listCandidates(100);
+    const approved = candidates.filter((c) => c.status === 'approved');
+    const rejected = candidates.filter((c) => c.status === 'rejected');
+
+    const qualityScores = candidates
+      .map((c) => c.qualityScore)
+      .filter((s): s is number => typeof s === 'number' && !isNaN(s));
+    const confidenceScores = candidates
+      .map((c) => c.confidenceScore)
+      .filter((s): s is number => typeof s === 'number' && !isNaN(s));
+
+    const avgQualityScore =
+      qualityScores.length > 0
+        ? Number((qualityScores.reduce((a, b) => a + b, 0) / qualityScores.length).toFixed(2))
+        : undefined;
+
+    const avgConfidenceScore =
+      confidenceScores.length > 0
+        ? Number((confidenceScores.reduce((a, b) => a + b, 0) / confidenceScores.length).toFixed(2))
+        : undefined;
+
     return {
       total: candidates.length,
-      approved: candidates.filter((c) => c.status === 'approved').length,
-      rejected: candidates.filter((c) => c.status === 'rejected').length,
+      approved: approved.length,
+      rejected: rejected.length,
+      avgQualityScore,
+      avgConfidenceScore,
     };
   }
 }
+

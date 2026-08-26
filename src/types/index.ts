@@ -7,6 +7,12 @@
 // Cloudflare Worker Runtime Bindings
 // ============================================================================
 
+export interface ScheduledEvent {
+  cron: string;
+  type: string;
+  scheduledTime: number;
+}
+
 export interface ExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
   passThroughOnException(): void;
@@ -88,8 +94,10 @@ export type EventType =
   | 'content.generated'
   | 'content.checked'
   | 'content.approved'
+  | 'content.rejected'
   | 'content.scheduled'
   | 'content.published'
+  | 'candidate.recorded'
   | 'incident.created'
   | 'webhook.received'
   | 'telegram.update.received'
@@ -140,6 +148,31 @@ export interface ContentApprovedPayload {
   approvedBy: string; // 'auto_eval' or user id
   approvedAt: number;
   scheduleTime?: number;
+  topic?: string;
+  formattedText?: string;
+  channelId?: string;
+}
+
+export interface ContentRejectedPayload {
+  contentId: string;
+  topic: string;
+  reason: string;
+  confidenceScore?: number;
+}
+
+export interface ShadowCandidate {
+  id: string;
+  topic: string;
+  draftText: string;
+  suggestedTags: string[];
+  sources: string[];
+  status: 'approved' | 'rejected';
+  rejectionReason?: string;
+  confidenceScore?: number;
+  claimsVerified?: Array<{ claim: string; verified: boolean; citation?: string }>;
+  correlationId?: string;
+  timestamp: number;
+  metadata?: Record<string, unknown>;
 }
 
 export interface ContentScheduledPayload {
@@ -153,6 +186,8 @@ export interface ContentPublishedPayload {
   messageId: number;
   channelId: string;
   publishedAt: number;
+  status?: string;
+  testModeActive?: boolean;
 }
 
 export type ChannelEvent =
@@ -161,6 +196,8 @@ export type ChannelEvent =
   | BaseEvent<ContentGeneratedPayload>
   | BaseEvent<ContentCheckedPayload>
   | BaseEvent<ContentApprovedPayload>
+  | BaseEvent<ContentRejectedPayload>
+  | BaseEvent<ShadowCandidate>
   | BaseEvent<ContentScheduledPayload>
   | BaseEvent<ContentPublishedPayload>
   | BaseEvent<Incident>

@@ -12,6 +12,7 @@ import { RepairAgent } from '../agents/repairAgent.ts';
 import { ResearcherAgent } from '../agents/researcher.ts';
 import { StrategistAgent } from '../agents/strategist.ts';
 import { WriterAgent } from '../agents/writer.ts';
+import { CandidateManager } from '../health/candidates.ts';
 import { IncidentManager } from '../health/incidents.ts';
 import { ITelegramClient } from '../telegram/client.ts';
 import {
@@ -40,6 +41,7 @@ export class Orchestrator {
   private processedEventsCount = 0;
   private recentEvents: Array<{ id: string; type: EventType; timestamp: number }> = [];
   private incidentManager?: IncidentManager;
+  private candidateManager?: CandidateManager;
   private env: Partial<Env>;
 
   // Registered agents
@@ -51,8 +53,14 @@ export class Orchestrator {
   public readonly analyst: AnalystAgent;
   public readonly repairAgent: RepairAgent;
 
-  constructor(telegramClient?: ITelegramClient, incidentManager?: IncidentManager, env?: Partial<Env>) {
+  constructor(
+    telegramClient?: ITelegramClient,
+    incidentManager?: IncidentManager,
+    env?: Partial<Env>,
+    candidateManager?: CandidateManager
+  ) {
     this.incidentManager = incidentManager;
+    this.candidateManager = candidateManager;
     this.env = env || {};
 
     // Initialize agent instances
@@ -222,7 +230,7 @@ export class Orchestrator {
       }
     });
 
-    // 3. Content generated -> fact checker verification
+    // 3. Content generated -> fact checker verification -> shadow candidate recording
     this.subscribe('content.generated', async (event) => {
       const generatedDraft = event.payload as any;
       const checkResult = await this.factChecker.execute(generatedDraft, event.correlationId);
@@ -240,6 +248,24 @@ export class Orchestrator {
         );
 
         if (checkResult.data.passed) {
+          // Record approved candidate in shadow storage
+          if (this.candidateManager) {
+            const candidate = await this.candidateManager.recordCandidate({
+              contentId: checkResult.data.contentId,
+              topic: generatedDraft.topic,
+              draftText: generatedDraft.draftText,
+              suggestedTags: generatedDraft.suggestedTags,
+              sources: generatedDraft.sources,
+              status: 'approved',
+              confidenceScore: checkResult.data.confidenceScore,
+              claimsVerified: checkResult.data.claimsVerified,
+              correlationId: event.correlationId,
+            });
+            if (candidate) {
+              await this.publish('candidate.recorded', candidate, event.correlationId);
+            }
+          }
+
           await this.publish(
             'content.approved',
             {
@@ -249,6 +275,36 @@ export class Orchestrator {
               topic: generatedDraft.topic,
               formattedText: generatedDraft.draftText,
               channelId: this.env.TELEGRAM_CHANNEL_ID || '@techpluseai',
+            },
+            event.correlationId
+          );
+        } else {
+          // Record rejected candidate in shadow storage
+          if (this.candidateManager) {
+            const candidate = await this.candidateManager.recordCandidate({
+              contentId: checkResult.data.contentId,
+              topic: generatedDraft.topic,
+              draftText: generatedDraft.draftText,
+              suggestedTags: generatedDraft.suggestedTags,
+              sources: generatedDraft.sources,
+              status: 'rejected',
+              rejectionReason: checkResult.data.notes || 'Fact-checking confidence threshold not satisfied',
+              confidenceScore: checkResult.data.confidenceScore,
+              claimsVerified: checkResult.data.claimsVerified,
+              correlationId: event.correlationId,
+            });
+            if (candidate) {
+              await this.publish('candidate.recorded', candidate, event.correlationId);
+            }
+          }
+
+          await this.publish(
+            'content.rejected',
+            {
+              contentId: checkResult.data.contentId,
+              topic: generatedDraft.topic,
+              reason: checkResult.data.notes || 'Fact-checking confidence threshold not satisfied',
+              confidenceScore: checkResult.data.confidenceScore,
             },
             event.correlationId
           );

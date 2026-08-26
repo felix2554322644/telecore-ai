@@ -4,6 +4,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { AgentDeck } from './components/AgentDeck.tsx';
+import { CandidatesViewer } from './components/CandidatesViewer.tsx';
 import { CloudflareGuide } from './components/CloudflareGuide.tsx';
 import { HealthOverview } from './components/HealthOverview.tsx';
 import { IncidentsViewer } from './components/IncidentsViewer.tsx';
@@ -16,6 +17,7 @@ import {
   HealthReport,
   Incident,
   PublicConfig,
+  ShadowCandidate,
 } from './types/index.ts';
 
 export default function App() {
@@ -25,6 +27,8 @@ export default function App() {
   const [processedEventsCount, setProcessedEventsCount] = useState<number>(0);
   const [recentEvents, setRecentEvents] = useState<Array<{ id: string; type: EventType; timestamp: number }>>([]);
   const [incidents, setIncidents] = useState<Incident[]>([]);
+  const [candidates, setCandidates] = useState<ShadowCandidate[]>([]);
+  const [candidateStats, setCandidateStats] = useState<{ total: number; approved: number; rejected: number } | undefined>(undefined);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
   const fetchStatus = async () => {
@@ -50,9 +54,28 @@ export default function App() {
         if (Array.isArray(statusData.incidents)) {
           setIncidents(statusData.incidents);
         }
+        if (statusData.candidates?.stats) {
+          setCandidateStats(statusData.candidates.stats);
+        }
       }
 
-      // 3. Fetch Incidents (fallback / direct telemetry endpoint)
+      // 3. Fetch Candidates
+      try {
+        const candRes = await fetch('/api/candidates');
+        if (candRes.ok) {
+          const candData = await candRes.json();
+          if (Array.isArray(candData.candidates)) {
+            setCandidates(candData.candidates);
+          }
+          if (candData.stats) {
+            setCandidateStats(candData.stats);
+          }
+        }
+      } catch {
+        // Fallback gracefully
+      }
+
+      // 4. Fetch Incidents
       try {
         const incRes = await fetch('/api/incidents');
         if (incRes.ok) {
@@ -116,6 +139,13 @@ export default function App() {
         {/* Telegram Integration & Controlled Test Publisher */}
         <TelegramManager
           config={config}
+          onRefresh={fetchStatus}
+        />
+
+        {/* Autonomous Shadow Mode Candidates */}
+        <CandidatesViewer
+          candidates={candidates}
+          stats={candidateStats}
           onRefresh={fetchStatus}
         />
 

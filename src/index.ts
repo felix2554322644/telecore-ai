@@ -6,13 +6,14 @@
 
 import { GeminiService } from './ai/gemini.ts';
 import { getPublicConfig, isTestMode, requireAdminAuth } from './config/config.ts';
+import { CandidateManager } from './health/candidates.ts';
 import { HealthService } from './health/health.ts';
 import { IncidentManager } from './health/incidents.ts';
 import { Orchestrator } from './orchestrator/orchestrator.ts';
 import { createStorage } from './storage/storage.ts';
 import { TelegramClient } from './telegram/client.ts';
 import { TelegramWebhookHandler } from './telegram/webhook.ts';
-import { Env, EventType, ExecutionContext } from './types/index.ts';
+import { Env, EventType, ExecutionContext, ScheduledEvent } from './types/index.ts';
 import { formatSafeErrorResponse, NotFoundError, UnauthorizedError } from './utils/errors.ts';
 import { Logger } from './utils/logger.ts';
 import { timingSafeEqual } from './utils/security.ts';
@@ -40,14 +41,16 @@ function jsonResponse(data: unknown, status = 200, headers?: Record<string, stri
 export function createAppContext(env: Partial<Env>) {
   const storage = createStorage(env);
   const incidentManager = new IncidentManager(storage);
+  const candidateManager = new CandidateManager(storage);
   const telegramClient = new TelegramClient(env.TELEGRAM_BOT_TOKEN);
   const geminiService = new GeminiService(env.GEMINI_API_KEY);
-  const orchestrator = new Orchestrator(telegramClient, incidentManager, env);
+  const orchestrator = new Orchestrator(telegramClient, incidentManager, env, candidateManager);
   const webhookHandler = new TelegramWebhookHandler(env.TELEGRAM_WEBHOOK_SECRET, orchestrator);
 
   return {
     storage,
     incidentManager,
+    candidateManager,
     telegramClient,
     geminiService,
     orchestrator,
@@ -104,6 +107,8 @@ export default {
           app.telegramClient
         );
         const incidents = await app.incidentManager.listIncidents(20);
+        const candidateStats = await app.candidateManager.getCandidateStats();
+        const recentCandidates = await app.candidateManager.listCandidates(5);
 
         return jsonResponse({
           system: {
@@ -114,9 +119,18 @@ export default {
             version: publicConfig.version,
             environment: publicConfig.environment,
             testMode: publicConfig.testMode,
+            shadowMode: {
+              enabled: true,
+              autonomousPublishingAllowed: false,
+              testModeActive: isTestMode(env),
+            },
           },
           config: publicConfig,
           orchestrator: orchestratorStatus,
+          candidates: {
+            stats: candidateStats,
+            recent: recentCandidates,
+          },
           dependencies: health.dependencies,
           incidents,
         });
@@ -325,6 +339,54 @@ export default {
       }
 
       // ----------------------------------------------------------------------
+      // 9c. Public Telemetry: GET /api/candidates - Non-sensitive Candidate Log
+      // ----------------------------------------------------------------------
+      if (method === 'GET' && pathname === '/api/candidates') {
+        const limit = parseInt(url.searchParams.get('limit') || '20', 10);
+        const statusParam = url.searchParams.get('status') as 'approved' | 'rejected' | undefined;
+        const candidates = await app.candidateManager.listCandidates(limit, statusParam);
+        const stats = await app.candidateManager.getCandidateStats();
+        return jsonResponse({
+          total: candidates.length,
+          stats,
+          candidates,
+        });
+      }
+
+      // ----------------------------------------------------------------------
+      // 9d. Protected Route: GET /api/admin/candidates - Admin Candidate Records
+      // ----------------------------------------------------------------------
+      if (method === 'GET' && pathname === '/api/admin/candidates') {
+        const authHeader = request.headers.get('Authorization');
+        requireAdminAuth(authHeader, env, 'view candidate records');
+
+        const limit = parseInt(url.searchParams.get('limit') || '20', 10);
+        const statusParam = url.searchParams.get('status') as 'approved' | 'rejected' | undefined;
+        const candidates = await app.candidateManager.listCandidates(limit, statusParam);
+        const stats = await app.candidateManager.getCandidateStats();
+        return jsonResponse({
+          total: candidates.length,
+          stats,
+          candidates,
+        });
+      }
+
+      // ----------------------------------------------------------------------
+      // 9e. Protected Route: GET /api/admin/candidates/:id - Single Candidate
+      // ----------------------------------------------------------------------
+      if (method === 'GET' && pathname.startsWith('/api/admin/candidates/')) {
+        const authHeader = request.headers.get('Authorization');
+        requireAdminAuth(authHeader, env, 'view candidate details');
+
+        const candidateId = pathname.replace('/api/admin/candidates/', '');
+        const candidate = await app.candidateManager.getCandidate(candidateId);
+        if (!candidate) {
+          throw new NotFoundError(`Candidate not found: ${candidateId}`);
+        }
+        return jsonResponse({ candidate });
+      }
+
+      // ----------------------------------------------------------------------
       // 10. Test/Dev Route: POST /api/test/event - Dispatch Pipeline Test Event
       // ----------------------------------------------------------------------
       if (method === 'POST' && (pathname === '/api/test/event' || pathname === '/api/admin/test/event')) {
@@ -404,10 +466,11 @@ export default {
         const publicConfig = getPublicConfig(env);
         return jsonResponse({
           service: 'TeleCore AI - Autonomous Telegram Channel Manager',
-          phase: 'Telegram Integration & Foundation Phase',
+          phase: 'Telegram Integration & Foundation Phase (Phase 6: Shadow Mode Active)',
           version: publicConfig.version,
           status: 'online',
           testMode: publicConfig.testMode,
+          shadowMode: true,
           endpoints: [
             'GET  /health',
             'GET  /api/status',
@@ -417,7 +480,11 @@ export default {
             'GET  /api/admin/telegram/webhook-info',
             'POST /api/admin/telegram/setup-webhook',
             'POST /api/admin/telegram/delete-webhook',
+            'GET  /api/incidents',
             'GET  /api/admin/incidents',
+            'GET  /api/candidates',
+            'GET  /api/admin/candidates',
+            'GET  /api/admin/candidates/:id',
             'POST /api/test/event',
           ],
         });
@@ -434,6 +501,39 @@ export default {
         logger.warn('request_rejected', `Request ${method} ${pathname} rejected with status ${safeError.error.statusCode}: ${safeError.error.message}`);
       }
       return jsonResponse(safeError, safeError.error.statusCode);
+    }
+  },
+
+  /**
+   * Cloudflare Worker Cron Trigger Handler
+   * Executes scheduled shadow mode cycle without publishing to Telegram
+   */
+  async scheduled(event: ScheduledEvent, env: Env, ctx?: ExecutionContext): Promise<void> {
+    logger.info('scheduled_trigger_fired', `Cloudflare Worker Cron Trigger fired: ${event.cron}`, {
+      context: { cron: event.cron, scheduledTime: event.scheduledTime },
+    });
+
+    const app = createAppContext(env);
+
+    const payload = {
+      niche: 'AI + technology + automation',
+      topic: 'Latest Developments in Autonomous AI Agents and Edge Infrastructure',
+      sourceHints: ['https://techpluseai.internal/radar'],
+      isScheduledTrigger: true,
+      cron: event.cron,
+    };
+
+    try {
+      await app.orchestrator.publish('research.requested', payload, `cron_${event.scheduledTime || Date.now()}`);
+      logger.info('scheduled_pipeline_completed', 'Scheduled shadow pipeline executed successfully');
+    } catch (err) {
+      logger.error('scheduled_pipeline_failed', 'Scheduled shadow pipeline failed', { error: err });
+      await app.incidentManager.recordIncident({
+        component: 'Scheduler:AutonomousCron',
+        severity: 'high',
+        error: err instanceof Error ? err.message : 'Unknown scheduler error',
+        context: { cron: event.cron, scheduledTime: event.scheduledTime },
+      });
     }
   },
 };

@@ -12,6 +12,7 @@ import { RepairAgent } from '../agents/repairAgent.ts';
 import { ResearcherAgent } from '../agents/researcher.ts';
 import { StrategistAgent } from '../agents/strategist.ts';
 import { WriterAgent } from '../agents/writer.ts';
+import { IGeminiService } from '../ai/gemini.ts';
 import { CandidateManager } from '../health/candidates.ts';
 import { IncidentManager } from '../health/incidents.ts';
 import { ITelegramClient } from '../telegram/client.ts';
@@ -57,14 +58,15 @@ export class Orchestrator {
     telegramClient?: ITelegramClient,
     incidentManager?: IncidentManager,
     env?: Partial<Env>,
-    candidateManager?: CandidateManager
+    candidateManager?: CandidateManager,
+    geminiService?: IGeminiService
   ) {
     this.incidentManager = incidentManager;
     this.candidateManager = candidateManager;
     this.env = env || {};
 
     // Initialize agent instances
-    this.researcher = new ResearcherAgent();
+    this.researcher = new ResearcherAgent(geminiService);
     this.strategist = new StrategistAgent();
     this.writer = new WriterAgent();
     this.factChecker = new FactCheckerAgent();

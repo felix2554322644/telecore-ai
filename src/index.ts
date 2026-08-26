@@ -44,7 +44,7 @@ export function createAppContext(env: Partial<Env>) {
   const candidateManager = new CandidateManager(storage);
   const telegramClient = new TelegramClient(env.TELEGRAM_BOT_TOKEN);
   const geminiService = new GeminiService(env.GEMINI_API_KEY);
-  const orchestrator = new Orchestrator(telegramClient, incidentManager, env, candidateManager);
+  const orchestrator = new Orchestrator(telegramClient, incidentManager, env, candidateManager, geminiService);
   const webhookHandler = new TelegramWebhookHandler(env.TELEGRAM_WEBHOOK_SECRET, orchestrator);
 
   return {

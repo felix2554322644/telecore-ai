@@ -10,11 +10,12 @@ import { CandidateManager } from './health/candidates.ts';
 import { HealthService } from './health/health.ts';
 import { IncidentManager } from './health/incidents.ts';
 import { Orchestrator } from './orchestrator/orchestrator.ts';
+import { ProductionControlManager } from './safety/productionControl.ts';
 import { IntelligentScheduler } from './scheduler/intelligentScheduler.ts';
 import { createStorage } from './storage/storage.ts';
 import { TelegramClient } from './telegram/client.ts';
 import { TelegramWebhookHandler } from './telegram/webhook.ts';
-import { Env, EventType, ExecutionContext, ScheduledEvent } from './types/index.ts';
+import { Env, EventType, ExecutionContext, ProductionSafetyConfig, ScheduledEvent } from './types/index.ts';
 import { formatSafeErrorResponse, NotFoundError, UnauthorizedError } from './utils/errors.ts';
 import { Logger } from './utils/logger.ts';
 import { timingSafeEqual } from './utils/security.ts';
@@ -43,9 +44,18 @@ export function createAppContext(env: Partial<Env>) {
   const storage = createStorage(env);
   const incidentManager = new IncidentManager(storage);
   const candidateManager = new CandidateManager(storage);
+  const productionControl = new ProductionControlManager(storage, env);
   const telegramClient = new TelegramClient(env.TELEGRAM_BOT_TOKEN);
   const geminiService = new GeminiService(env.GEMINI_API_KEY);
-  const orchestrator = new Orchestrator(telegramClient, incidentManager, env, candidateManager, geminiService, storage);
+  const orchestrator = new Orchestrator(
+    telegramClient,
+    incidentManager,
+    env,
+    candidateManager,
+    geminiService,
+    storage,
+    productionControl
+  );
   const webhookHandler = new TelegramWebhookHandler(env.TELEGRAM_WEBHOOK_SECRET, orchestrator);
   const scheduler = new IntelligentScheduler(
     storage,
@@ -59,6 +69,7 @@ export function createAppContext(env: Partial<Env>) {
     storage,
     incidentManager,
     candidateManager,
+    productionControl,
     telegramClient,
     geminiService,
     orchestrator,
@@ -119,6 +130,8 @@ export default {
         const candidateStats = await app.candidateManager.getCandidateStats();
         const recentCandidates = await app.candidateManager.listCandidates(5);
         const schedulerStatus = await app.scheduler.getStatus();
+        const controlState = await app.productionControl.getControlState();
+        const recentAuditDecisions = await app.productionControl.listDecisionLogs({ limit: 5 });
 
         return jsonResponse({
           system: {
@@ -136,6 +149,25 @@ export default {
             },
           },
           config: publicConfig,
+          control: {
+            killSwitchActive: controlState.killSwitchActive,
+            killSwitchReason: controlState.killSwitchReason,
+            autonomousPublishingState: controlState.autonomousPublishingState,
+            rateLimitStatus: {
+              publishedThisHour: controlState.publicationsThisHour || 0,
+              maxPostsPerHour: controlState.safetyConfig.maxPostsPerHour,
+              lastPublishedAt: controlState.lastPublishedAt,
+            },
+            safeguards: {
+              minQualityThreshold: controlState.safetyConfig.minQualityThreshold,
+              minConfidenceThreshold: controlState.safetyConfig.minConfidenceThreshold,
+              enforceStrictFactCheck: controlState.safetyConfig.enforceStrictFactCheck,
+            },
+          },
+          audit: {
+            recentDecisionsCount: recentAuditDecisions.length,
+            recentDecisions: recentAuditDecisions,
+          },
           orchestrator: orchestratorStatus,
           candidates: {
             stats: candidateStats,
@@ -146,6 +178,154 @@ export default {
           dependencies: health.dependencies,
           incidents,
         });
+      }
+
+      // ----------------------------------------------------------------------
+      // 2b. GET /api/control/status - Production Control & Safeguards State
+      // ----------------------------------------------------------------------
+      if (method === 'GET' && (pathname === '/api/control/status' || pathname === '/api/admin/control/status' || pathname === '/api/control')) {
+        if (pathname.includes('/admin/')) {
+          const authHeader = request.headers.get('Authorization');
+          requireAdminAuth(authHeader, env, 'view admin control status');
+        }
+
+        const controlState = await app.productionControl.getControlState();
+        const recentAuditDecisions = await app.productionControl.listDecisionLogs({ limit: 10 });
+        return jsonResponse({
+          ok: true,
+          state: controlState,
+          recentAuditDecisions,
+          testModeActive: isTestMode(env),
+        });
+      }
+
+      // ----------------------------------------------------------------------
+      // 2c. POST /api/admin/control/kill-switch - Owner Global Kill Switch Toggle
+      // ----------------------------------------------------------------------
+      if (method === 'POST' && (pathname === '/api/admin/control/kill-switch' || pathname === '/api/control/kill-switch')) {
+        const authHeader = request.headers.get('Authorization');
+        requireAdminAuth(authHeader, env, 'toggle global kill switch');
+
+        let body: { active?: boolean; reason?: string } = {};
+        try {
+          body = (await request.json()) as typeof body;
+        } catch {
+          return jsonResponse({ error: 'Malformed JSON payload' }, 400);
+        }
+
+        if (typeof body.active !== 'boolean') {
+          return jsonResponse({ error: 'Field "active" (boolean) is required' }, 400);
+        }
+
+        const updatedState = await app.productionControl.setKillSwitch(
+          body.active,
+          body.reason,
+          'owner:admin'
+        );
+
+        await app.orchestrator.publish(
+          'control.kill_switch_toggled',
+          { active: body.active, reason: body.reason, state: updatedState }
+        );
+
+        return jsonResponse({
+          ok: true,
+          message: body.active
+            ? 'Global kill switch ENGAGED. All autonomous and publishing activity halted.'
+            : 'Global kill switch DISENGAGED. Normal safeguard operations resumed.',
+          state: updatedState,
+        });
+      }
+
+      // ----------------------------------------------------------------------
+      // 2d. POST /api/admin/control/autonomous-publishing - Autonomous State Control
+      // ----------------------------------------------------------------------
+      if (method === 'POST' && (pathname === '/api/admin/control/autonomous-publishing' || pathname === '/api/control/autonomous-publishing')) {
+        const authHeader = request.headers.get('Authorization');
+        requireAdminAuth(authHeader, env, 'change autonomous publishing state');
+
+        let body: { state?: 'disabled' | 'armed' | 'standby' } = {};
+        try {
+          body = (await request.json()) as typeof body;
+        } catch {
+          return jsonResponse({ error: 'Malformed JSON payload' }, 400);
+        }
+
+        const validStates = ['disabled', 'armed', 'standby'];
+        if (!body.state || !validStates.includes(body.state)) {
+          return jsonResponse({ error: `Field "state" must be one of: ${validStates.join(', ')}` }, 400);
+        }
+
+        const updatedState = await app.productionControl.setAutonomousPublishingState(
+          body.state,
+          'owner:admin'
+        );
+
+        await app.orchestrator.publish(
+          'control.autonomous_state_changed',
+          { state: body.state, controlState: updatedState }
+        );
+
+        return jsonResponse({
+          ok: true,
+          message: `Autonomous publishing state transitioned to '${body.state}'`,
+          state: updatedState,
+        });
+      }
+
+      // ----------------------------------------------------------------------
+      // 2e. POST /api/admin/control/safety-config - Update Safeguard Thresholds
+      // ----------------------------------------------------------------------
+      if (method === 'POST' && (pathname === '/api/admin/control/safety-config' || pathname === '/api/control/safety-config')) {
+        const authHeader = request.headers.get('Authorization');
+        requireAdminAuth(authHeader, env, 'update safety configuration');
+
+        let body: Partial<ProductionSafetyConfig> = {};
+        try {
+          body = (await request.json()) as typeof body;
+        } catch {
+          return jsonResponse({ error: 'Malformed JSON payload' }, 400);
+        }
+
+        const updatedState = await app.productionControl.updateSafetyConfig(body, 'owner:admin');
+
+        return jsonResponse({
+          ok: true,
+          message: 'Production safety configuration updated successfully',
+          state: updatedState,
+        });
+      }
+
+      // ----------------------------------------------------------------------
+      // 2f. GET /api/audit-logs - Query Immutable Pipeline Decision Logs
+      // ----------------------------------------------------------------------
+      if (method === 'GET' && (pathname === '/api/audit-logs' || pathname === '/api/admin/audit-logs')) {
+        if (pathname.includes('/admin/')) {
+          const authHeader = request.headers.get('Authorization');
+          requireAdminAuth(authHeader, env, 'view audit decision logs');
+        }
+
+        const limit = parseInt(url.searchParams.get('limit') || '50', 10);
+        const category = (url.searchParams.get('category') || undefined) as any;
+        const decision = url.searchParams.get('decision') || undefined;
+
+        const logs = await app.productionControl.listDecisionLogs({ limit, category, decision });
+        return jsonResponse({
+          total: logs.length,
+          logs,
+        });
+      }
+
+      // ----------------------------------------------------------------------
+      // 2g. GET /api/audit-logs/:id - Single Audit Decision Detail
+      // ----------------------------------------------------------------------
+      if (method === 'GET' && (pathname.startsWith('/api/audit-logs/') || pathname.startsWith('/api/admin/audit-logs/'))) {
+        const id = pathname.replace(/^\/api\/(admin\/)?audit-logs\//, '');
+        const log = await app.productionControl.getDecisionLog(id);
+        if (!log) {
+          throw new NotFoundError(`Audit decision log entry not found: ${id}`);
+        }
+        return jsonResponse({ ok: true, log });
       }
 
       // ----------------------------------------------------------------------
@@ -223,6 +403,17 @@ export default {
         const authHeader = request.headers.get('Authorization');
         requireAdminAuth(authHeader, env, 'publish test messages');
 
+        // Check global kill switch
+        const isKillActive = await app.productionControl.isKillSwitchActive();
+        if (isKillActive) {
+          const controlState = await app.productionControl.getControlState();
+          return jsonResponse({
+            ok: false,
+            error: `Publishing blocked: Global kill switch is ACTIVE (${controlState.killSwitchReason || 'Emergency stop'})`,
+            killSwitchActive: true,
+          }, 403);
+        }
+
         if (!env.TELEGRAM_CHANNEL_ID || env.TELEGRAM_CHANNEL_ID.trim().length === 0) {
           return jsonResponse({
             ok: false,
@@ -261,6 +452,13 @@ export default {
             parse_mode: parseMode,
             disable_notification: Boolean(body.disable_notification),
           }
+        );
+
+        // Record successful publication in production control & audit
+        await app.productionControl.recordPublicationSuccess(
+          env.TELEGRAM_CHANNEL_ID.trim(),
+          `manual-${telegramMessage.message_id}`,
+          `manual-test-${telegramMessage.message_id}`
         );
 
         // Record event in orchestrator
@@ -555,7 +753,7 @@ export default {
         const publicConfig = getPublicConfig(env, request.url);
         return jsonResponse({
           service: 'TeleCore AI - Autonomous Telegram Channel Manager',
-          phase: 'Telegram Integration & Foundation Phase (Phase 11: Feedback & Learning Loop Active)',
+          phase: 'Production Safety & Control Layer (Phase 12 Active: Kill Switch & Safeguard Gates)',
           version: publicConfig.version,
           status: 'online',
           testMode: publicConfig.testMode,
@@ -563,6 +761,12 @@ export default {
           endpoints: [
             'GET  /health',
             'GET  /api/status',
+            'GET  /api/control/status',
+            'POST /api/admin/control/kill-switch',
+            'POST /api/admin/control/autonomous-publishing',
+            'POST /api/admin/control/safety-config',
+            'GET  /api/audit-logs',
+            'GET  /api/audit-logs/:id',
             'POST /webhooks/telegram',
             'GET  /api/admin/telegram/verify',
             'POST /api/admin/telegram/test-publish',

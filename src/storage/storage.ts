@@ -128,6 +128,10 @@ export class CloudflareKVStorageAdapter implements IStorage {
  * Storage factory with automatic adapter selection
  */
 export function createStorage(env?: Partial<Env>): IStorage {
+  if ((env as any)?.__STORAGE__) {
+    return (env as any).__STORAGE__ as IStorage;
+  }
+
   if (env?.STORAGE_KV) {
     logger.info('storage_initialized', 'Using Cloudflare KV storage adapter');
     return new CloudflareKVStorageAdapter(env.STORAGE_KV);

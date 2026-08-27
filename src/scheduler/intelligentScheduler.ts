@@ -447,6 +447,32 @@ export class IntelligentScheduler {
       context: { cron: triggerInfo?.cron, isManualTrigger: triggerInfo?.isManualTrigger },
     });
 
+    // Check Global Kill Switch before proceeding
+    if (this.orchestrator.productionControl) {
+      const isKillActive = await this.orchestrator.productionControl.isKillSwitchActive();
+      if (isKillActive) {
+        const controlState = await this.orchestrator.productionControl.getControlState();
+        const reason = `Scheduled cycle halted: Global kill switch is ACTIVE (${controlState.killSwitchReason || 'Emergency stop'})`;
+        logger.warn('scheduler_cycle_halted_kill_switch', reason, { correlationId });
+
+        const record: ScheduledCycleRecord = {
+          cycleId,
+          topic: 'N/A (Halted by Kill Switch)',
+          category: 'Safety',
+          source: 'fallback_recovery',
+          timestamp: Date.now(),
+          cron: triggerInfo?.cron,
+          status: 'failed',
+          rejectionReason: reason,
+          correlationId,
+          durationMs: Date.now() - startTime,
+        };
+
+        await this.orchestrator.publish('scheduler.cycle_failed', record, correlationId);
+        return { success: false, topic: record.topic, category: record.category, cycleRecord: record, error: reason };
+      }
+    }
+
     // Notify event bus
     await this.orchestrator.publish(
       'scheduler.cycle_started',

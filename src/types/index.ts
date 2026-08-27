@@ -105,7 +105,11 @@ export type EventType =
   | 'scheduler.cycle_started'
   | 'scheduler.cycle_completed'
   | 'scheduler.cycle_failed'
-  | 'analytics.feedback_updated';
+  | 'analytics.feedback_updated'
+  | 'control.kill_switch_toggled'
+  | 'control.autonomous_state_changed'
+  | 'control.gate_evaluated'
+  | 'audit.log_recorded';
 
 export interface BaseEvent<T = unknown> {
   id: string;
@@ -559,6 +563,90 @@ export interface FeedbackLearningReport {
   recommendations: string[];
 }
 
+// ============================================================================
+// Phase 12: Production Control & Safety Layer Types
+// ============================================================================
+
+export type AutonomousPublishingState = 'disabled' | 'armed' | 'standby';
+
+export interface ProductionSafetyConfig {
+  minQualityThreshold: number; // default 0.85
+  minConfidenceThreshold: number; // default 0.90
+  maxPostsPerHour: number; // rate limit (default 2)
+  minPostIntervalMinutes: number; // cooldown (default 15 mins)
+  allowedChannels: string[]; // whitelist of allowed channel IDs/usernames
+  enforceStrictFactCheck: boolean; // default true
+  maxCharacterLength: number; // default 4096 (Telegram limit)
+}
+
+export interface ProductionControlState {
+  killSwitchActive: boolean;
+  killSwitchReason?: string;
+  killSwitchActivatedAt?: number;
+  killSwitchActivatedBy?: string;
+  autonomousPublishingState: AutonomousPublishingState;
+  autonomousPublishingArmedAt?: number;
+  autonomousPublishingArmedBy?: string;
+  lastPublishedAt?: number;
+  publicationsThisHour: number;
+  safetyConfig: ProductionSafetyConfig;
+  updatedAt: number;
+}
+
+export interface PrePublicationCheck {
+  name: string;
+  category: 'kill_switch' | 'autonomous_state' | 'environment' | 'quality' | 'fact_check' | 'channel' | 'rate_limit' | 'content';
+  passed: boolean;
+  required: boolean;
+  details?: string;
+}
+
+export interface PrePublicationGateRequest {
+  contentId: string;
+  channelId: string;
+  formattedText: string;
+  isManualTest?: boolean;
+  qualityScore?: number;
+  confidenceScore?: number;
+  factCheckPassed?: boolean;
+  claimsVerifiedCount?: number;
+  actor?: string;
+  correlationId?: string;
+}
+
+export interface PrePublicationGateResult {
+  allowed: boolean;
+  action: 'ALLOW' | 'BLOCK' | 'REJECT';
+  reason: string;
+  checks: PrePublicationCheck[];
+  timestamp: number;
+  evaluatedBy: string;
+}
+
+export type DecisionCategory =
+  | 'kill_switch'
+  | 'autonomous_state'
+  | 'pre_publish_gate'
+  | 'candidate_evaluation'
+  | 'content_generation'
+  | 'scheduler_cycle'
+  | 'admin_action'
+  | 'safety_violation';
+
+export interface PipelineDecisionLog {
+  id: string;
+  timestamp: number;
+  correlationId?: string;
+  category: DecisionCategory;
+  decision: 'ALLOW' | 'BLOCK' | 'REJECT' | 'ESCALATE' | 'TRIGGER' | 'ARMED' | 'DISARMED' | 'HALTED';
+  reason: string;
+  actor: string; // e.g. 'system', 'scheduler', 'owner:admin', 'agent:publisher', 'agent:fact_checker'
+  targetContentId?: string;
+  targetChannelId?: string;
+  checks?: PrePublicationCheck[];
+  metadata?: Record<string, unknown>;
+}
+
 export type {
   GeminiAuditParams,
   GeminiAuditResult,
@@ -566,4 +654,5 @@ export type {
   GeminiResearchResult,
   IGeminiService,
 } from '../ai/gemini.ts';
+
 

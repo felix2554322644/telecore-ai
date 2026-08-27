@@ -6,6 +6,8 @@
  */
 
 import { isAutonomousPublishingAllowed } from '../config/config.ts';
+import { ProductionControlManager } from '../safety/productionControl.ts';
+import { InMemoryStorageAdapter } from '../storage/storage.ts';
 import { ITelegramClient } from '../telegram/client.ts';
 import {
   AgentExecutionResult,
@@ -14,6 +16,7 @@ import {
   ContentPublishedPayload,
   Env,
   IAgent,
+  PrePublicationGateResult,
 } from '../types/index.ts';
 import { Logger } from '../utils/logger.ts';
 
@@ -25,24 +28,39 @@ export interface PublishRequest {
   formattedText: string;
   isSimulated?: boolean;
   isManualTest?: boolean;
+  qualityScore?: number;
+  confidenceScore?: number;
+  factCheckPassed?: boolean;
+  claimsVerifiedCount?: number;
+  actor?: string;
 }
 
 export class PublisherAgent implements IAgent<PublishRequest, ContentPublishedPayload> {
   private telegramClient?: ITelegramClient;
   private env: Partial<Env>;
+  private productionControl: ProductionControlManager;
 
   public readonly metadata: AgentMetadata = {
     name: 'PublisherAgent',
     role: 'publisher',
     version: '0.1.0-foundation',
-    description: 'Formats and publishes approved content to Telegram channels with strict safety guardrails.',
+    description: 'Formats and publishes approved content to Telegram channels with strict safety guardrails and audit logging.',
     isAutonomous: false,
     status: 'ready',
   };
 
-  constructor(telegramClient?: ITelegramClient, env?: Partial<Env>) {
+  constructor(
+    telegramClient?: ITelegramClient,
+    env?: Partial<Env>,
+    productionControl?: ProductionControlManager
+  ) {
     this.telegramClient = telegramClient;
     this.env = env || {};
+    this.productionControl = productionControl || new ProductionControlManager(new InMemoryStorageAdapter(), this.env);
+  }
+
+  public setProductionControl(productionControl: ProductionControlManager): void {
+    this.productionControl = productionControl;
   }
 
   public canHandle(event: BaseEvent): boolean {
@@ -59,18 +77,33 @@ export class PublisherAgent implements IAgent<PublishRequest, ContentPublishedPa
       context: { isManualTest: Boolean(input.isManualTest) },
     });
 
-    // Autonomous safety check: Block automated publishing if test mode is active or not explicitly allowed
-    const autonomousAllowed = isAutonomousPublishingAllowed(this.env);
-    if (!input.isManualTest && !autonomousAllowed) {
-      logger.warn(
-        'autonomous_publish_blocked',
-        `Autonomous publication for ${input.contentId} was blocked by safety policy (TELEGRAM_TEST_MODE is active or autonomous publishing is disabled).`,
-        { correlationId, context: { channelId: input.channelId } }
-      );
+    // 1. Comprehensive Pre-Publication Safeguard Gate (10-point check)
+    const gateResult: PrePublicationGateResult = await this.productionControl.evaluatePrePublicationGate({
+      contentId: input.contentId,
+      channelId: input.channelId,
+      formattedText: input.formattedText,
+      isManualTest: input.isManualTest,
+      qualityScore: input.qualityScore,
+      confidenceScore: input.confidenceScore,
+      factCheckPassed: input.factCheckPassed,
+      claimsVerifiedCount: input.claimsVerifiedCount,
+      actor: input.actor,
+      correlationId,
+    });
+
+    // If any mandatory safeguard failed, block immediately and log
+    if (!gateResult.allowed) {
+      logger.warn('autonomous_publish_blocked', `Publication for ${input.contentId} BLOCKED: ${gateResult.reason}`, {
+        correlationId,
+        context: {
+          channelId: input.channelId,
+          failedChecks: gateResult.checks.filter((c) => c.required && !c.passed).map((c) => c.name),
+        },
+      });
 
       return {
         success: false,
-        error: 'Autonomous publishing is disabled (TELEGRAM_TEST_MODE is active). Real publication blocked.',
+        error: `Autonomous publishing is disabled. Publication blocked by production safeguards: ${gateResult.reason}`,
         data: {
           contentId: input.contentId,
           messageId: 0,
@@ -80,18 +113,23 @@ export class PublisherAgent implements IAgent<PublishRequest, ContentPublishedPa
         durationMs: Date.now() - startTime,
         metadata: {
           status: 'blocked_by_safety_policy',
+          gateResult,
           testModeActive: true,
-          autonomousPublishingAllowed: false,
-          note: 'Autonomous publishing is blocked while TELEGRAM_TEST_MODE is enabled. Real network call prevented.',
+          autonomousPublishingAllowed: isAutonomousPublishingAllowed(this.env),
+          note: gateResult.reason,
         },
       };
     }
 
+    // 2. Real Telegram Client dispatch when configured and not simulated
     if (this.telegramClient?.isConfigured() && !input.isSimulated) {
       try {
         const message = await this.telegramClient.sendMessage(input.channelId, input.formattedText, {
           parse_mode: 'Markdown',
         });
+
+        // Record successful publication in production control (updates rate limits and audit log)
+        await this.productionControl.recordPublicationSuccess(input.channelId, input.contentId, correlationId);
 
         return {
           success: true,
@@ -102,6 +140,9 @@ export class PublisherAgent implements IAgent<PublishRequest, ContentPublishedPa
             publishedAt: Date.now(),
           },
           durationMs: Date.now() - startTime,
+          metadata: {
+            gateResult,
+          },
         };
       } catch (err) {
         logger.error('publish_failed', `Failed to publish to Telegram channel: ${input.channelId}`, {
@@ -111,6 +152,7 @@ export class PublisherAgent implements IAgent<PublishRequest, ContentPublishedPa
           success: false,
           error: err instanceof Error ? err.message : 'Publish error',
           durationMs: Date.now() - startTime,
+          metadata: { gateResult },
         };
       }
     }
@@ -127,7 +169,9 @@ export class PublisherAgent implements IAgent<PublishRequest, ContentPublishedPa
       durationMs: Date.now() - startTime,
       metadata: {
         note: 'Simulated publish response (Telegram bot or channel ID not active)',
+        gateResult,
       },
     };
   }
 }
+

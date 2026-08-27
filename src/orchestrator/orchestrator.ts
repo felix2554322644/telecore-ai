@@ -15,6 +15,8 @@ import { WriterAgent } from '../agents/writer.ts';
 import { IGeminiService } from '../ai/gemini.ts';
 import { CandidateManager } from '../health/candidates.ts';
 import { IncidentManager } from '../health/incidents.ts';
+import { ProductionControlManager } from '../safety/productionControl.ts';
+import { InMemoryStorageAdapter } from '../storage/storage.ts';
 import { ITelegramClient } from '../telegram/client.ts';
 import {
   AgentMetadata,
@@ -47,6 +49,9 @@ export class Orchestrator {
   private storage?: IStorage;
   private env: Partial<Env>;
 
+  // Production Control & Safeguards Layer
+  public readonly productionControl: ProductionControlManager;
+
   // Registered agents
   public readonly researcher: ResearcherAgent;
   public readonly strategist: StrategistAgent;
@@ -62,19 +67,25 @@ export class Orchestrator {
     env?: Partial<Env>,
     candidateManager?: CandidateManager,
     geminiService?: IGeminiService,
-    storage?: IStorage
+    storage?: IStorage,
+    productionControl?: ProductionControlManager
   ) {
     this.incidentManager = incidentManager;
     this.candidateManager = candidateManager;
     this.storage = storage;
     this.env = env || {};
 
+    // Initialize production control manager
+    this.productionControl =
+      productionControl ||
+      new ProductionControlManager(this.storage || new InMemoryStorageAdapter(), this.env);
+
     // Initialize agent instances
     this.researcher = new ResearcherAgent(geminiService);
     this.strategist = new StrategistAgent();
     this.writer = new WriterAgent();
     this.factChecker = new FactCheckerAgent(geminiService);
-    this.publisher = new PublisherAgent(telegramClient, this.env);
+    this.publisher = new PublisherAgent(telegramClient, this.env, this.productionControl);
     this.analyst = new AnalystAgent(storage, candidateManager);
     this.repairAgent = new RepairAgent();
 
@@ -356,6 +367,10 @@ export class Orchestrator {
           channelId,
           formattedText: approvedContent.formattedText,
           isManualTest: false,
+          qualityScore: approvedContent.qualityScore,
+          confidenceScore: approvedContent.confidenceScore,
+          factCheckPassed: true,
+          actor: 'agent:orchestrator',
         },
         event.correlationId
       );

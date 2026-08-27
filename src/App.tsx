@@ -10,6 +10,7 @@ import { FeedbackViewer } from './components/FeedbackViewer.tsx';
 import { HealthOverview } from './components/HealthOverview.tsx';
 import { IncidentsViewer } from './components/IncidentsViewer.tsx';
 import { PipelineInspector } from './components/PipelineInspector.tsx';
+import { ProductionControlViewer } from './components/ProductionControlViewer.tsx';
 import { SchedulerViewer } from './components/SchedulerViewer.tsx';
 import { StatusHeader } from './components/StatusHeader.tsx';
 import { TelegramManager } from './components/TelegramManager.tsx';
@@ -198,6 +199,11 @@ export default function App() {
         <HealthOverview
           dependencies={health?.dependencies}
           config={config}
+        />
+
+        {/* Phase 12 Production Safety & Control Layer */}
+        <ProductionControlViewer
+          onRefresh={fetchStatus}
         />
 
         {/* Intelligent Topic Scheduler & Cluster Rotation */}

@@ -45,8 +45,8 @@ export function createAppContext(env: Partial<Env>) {
   const incidentManager = new IncidentManager(storage);
   const candidateManager = new CandidateManager(storage);
   const productionControl = new ProductionControlManager(storage, env);
-  const telegramClient = new TelegramClient(env.TELEGRAM_BOT_TOKEN);
-  const geminiService = new GeminiService(env.GEMINI_API_KEY);
+  const telegramClient = (env as any)?.__TELEGRAM_CLIENT__ || new TelegramClient(env.TELEGRAM_BOT_TOKEN);
+  const geminiService = (env as any)?.__GEMINI_SERVICE__ || new GeminiService(env.GEMINI_API_KEY);
   const orchestrator = new Orchestrator(
     telegramClient,
     incidentManager,
@@ -636,6 +636,177 @@ export default {
       }
 
       // ----------------------------------------------------------------------
+      // 9f. Phase 13 Controlled Live Publishing: POST /api/admin/publish-candidate or /api/admin/candidates/:id/publish
+      // Strictly owner-authorized, one-post live publishing of ONE existing approved shadow candidate
+      // Re-evaluates all 10 pre-publication safeguards, enforces anti-replay, and logs full audit trail.
+      // ----------------------------------------------------------------------
+      if (
+        method === 'POST' &&
+        (pathname === '/api/admin/publish-candidate' ||
+          (pathname.startsWith('/api/admin/candidates/') && pathname.endsWith('/publish')))
+      ) {
+        const authHeader = request.headers.get('Authorization');
+        requireAdminAuth(authHeader, env, 'publish approved shadow candidate');
+
+        let body: { candidateId?: string; targetChannel?: string; correlationId?: string } = {};
+        try {
+          body = (await request.json()) as typeof body;
+        } catch {
+          // Body is optional if candidateId is in route path
+          body = {};
+        }
+
+        // Extract candidateId from route path or JSON body
+        let candidateId = body.candidateId?.trim();
+        if (!candidateId && pathname.startsWith('/api/admin/candidates/') && pathname.endsWith('/publish')) {
+          candidateId = pathname
+            .replace('/api/admin/candidates/', '')
+            .replace('/publish', '')
+            .trim();
+        }
+
+        if (!candidateId || candidateId.length === 0) {
+          return jsonResponse({ error: 'Field "candidateId" is required' }, 400);
+        }
+
+        const correlationId = body.correlationId || `owner_pub_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+        // 1. Fetch Candidate
+        const candidate = await app.candidateManager.getCandidate(candidateId);
+        if (!candidate) {
+          throw new NotFoundError(`Candidate not found: ${candidateId}`);
+        }
+
+        // 2. Anti-Replay / Duplicate Publication Check
+        if (candidate.status === 'published' || candidate.publishedAt || candidate.publishedMessageId) {
+          const replayReason = `Duplicate/replay publication prevented: Candidate ${candidateId} was already published at ${new Date(candidate.publishedAt || candidate.timestamp).toISOString()} (Message ID: ${candidate.publishedMessageId || 'N/A'})`;
+          logger.warn('duplicate_publish_attempt_blocked', replayReason, {
+            correlationId,
+            context: { candidateId, publishedAt: candidate.publishedAt, messageId: candidate.publishedMessageId },
+          });
+
+          await app.productionControl.recordDecisionLog({
+            category: 'pre_publish_gate',
+            decision: 'BLOCK',
+            reason: replayReason,
+            actor: 'owner:admin',
+            targetContentId: candidateId,
+            targetChannelId: body.targetChannel || env.TELEGRAM_CHANNEL_ID,
+            correlationId,
+            metadata: {
+              antiReplayViolation: true,
+              candidateStatus: candidate.status,
+              existingMessageId: candidate.publishedMessageId,
+              existingPublishedAt: candidate.publishedAt,
+            },
+          });
+
+          return jsonResponse({
+            ok: false,
+            error: replayReason,
+            candidateId,
+            alreadyPublished: true,
+            publishedAt: candidate.publishedAt,
+            messageId: candidate.publishedMessageId,
+          }, 409);
+        }
+
+        // 3. Status Verification: Candidate must be in 'approved' status
+        if (candidate.status !== 'approved') {
+          const unapprovedReason = `Candidate ${candidateId} cannot be published because its status is '${candidate.status}' (rejection: ${candidate.rejectionReason || candidate.rejectionCode || 'Quality thresholds not satisfied'}). Only 'approved' candidates may be published.`;
+          logger.warn('unapproved_publish_attempt_blocked', unapprovedReason, {
+            correlationId,
+            context: { candidateId, status: candidate.status },
+          });
+
+          await app.productionControl.recordDecisionLog({
+            category: 'pre_publish_gate',
+            decision: 'REJECT',
+            reason: unapprovedReason,
+            actor: 'owner:admin',
+            targetContentId: candidateId,
+            targetChannelId: body.targetChannel || env.TELEGRAM_CHANNEL_ID,
+            correlationId,
+            metadata: { candidateStatus: candidate.status, rejectionReason: candidate.rejectionReason },
+          });
+
+          return jsonResponse({
+            ok: false,
+            error: unapprovedReason,
+            candidateId,
+            status: candidate.status,
+            rejectionReason: candidate.rejectionReason,
+            rejectionCode: candidate.rejectionCode,
+          }, 400);
+        }
+
+        // 4. Determine Target Channel
+        const targetChannel = (body.targetChannel || env.TELEGRAM_CHANNEL_ID || '').trim();
+
+        // 5. Re-check All Pre-Publication Safeguard Gates & Dispatch via existing PublisherAgent
+        const publishResult = await app.orchestrator.publisher.execute(
+          {
+            contentId: candidate.id,
+            channelId: targetChannel,
+            formattedText: candidate.draftText,
+            isManualTest: true,
+            qualityScore: candidate.qualityScore,
+            confidenceScore: candidate.confidenceScore,
+            factCheckPassed: candidate.status === 'approved' && (!candidate.claimsVerified || candidate.claimsVerified.every((c) => c.verified !== false)),
+            claimsVerifiedCount: candidate.claimsVerified?.length || 0,
+            actor: 'owner:admin',
+          },
+          correlationId
+        );
+
+        if (!publishResult.success) {
+          return jsonResponse({
+            ok: false,
+            error: publishResult.error || 'Failed to publish candidate due to safeguard gate failure',
+            candidateId: candidate.id,
+            gateResult: publishResult.metadata?.gateResult,
+          }, 403);
+        }
+
+        // 6. Record and Persist Published State (Anti-Replay Lock)
+        const publishedMessageId = publishResult.data?.messageId ?? 0;
+        const publishedAt = publishResult.data?.publishedAt ?? Date.now();
+
+        const updatedCandidate = await app.candidateManager.markCandidatePublished(candidate.id, {
+          messageId: publishedMessageId,
+          channelId: targetChannel,
+          publishedAt,
+          publishedBy: 'owner:admin',
+          correlationId,
+        });
+
+        // 7. Dispatch Event through Orchestrator
+        await app.orchestrator.publish(
+          'content.published',
+          {
+            contentId: candidate.id,
+            messageId: publishedMessageId,
+            channelId: targetChannel,
+            publishedAt,
+            manualControlledPublish: true,
+            candidate: updatedCandidate,
+          },
+          correlationId
+        );
+
+        return jsonResponse({
+          ok: true,
+          message: `Controlled candidate "${candidate.topic}" published successfully to Telegram channel ${targetChannel}`,
+          candidateId: candidate.id,
+          messageId: publishedMessageId,
+          channelId: targetChannel,
+          publishedAt,
+          gateResult: publishResult.metadata?.gateResult,
+          candidate: updatedCandidate,
+        });
+      }
+
+      // ----------------------------------------------------------------------
       // 10. Scheduler Telemetry & Trigger Routes
       // ----------------------------------------------------------------------
       if (method === 'GET' && (pathname === '/api/scheduler' || pathname === '/api/admin/scheduler')) {
@@ -753,7 +924,7 @@ export default {
         const publicConfig = getPublicConfig(env, request.url);
         return jsonResponse({
           service: 'TeleCore AI - Autonomous Telegram Channel Manager',
-          phase: 'Production Safety & Control Layer (Phase 12 Active: Kill Switch & Safeguard Gates)',
+          phase: 'Phase 13: Controlled Live Publishing Readiness (Owner-Authorized One-Post Gate)',
           version: publicConfig.version,
           status: 'online',
           testMode: publicConfig.testMode,
@@ -770,6 +941,8 @@ export default {
             'POST /webhooks/telegram',
             'GET  /api/admin/telegram/verify',
             'POST /api/admin/telegram/test-publish',
+            'POST /api/admin/publish-candidate',
+            'POST /api/admin/candidates/:id/publish',
             'GET  /api/admin/telegram/webhook-info',
             'POST /api/admin/telegram/setup-webhook',
             'POST /api/admin/telegram/delete-webhook',

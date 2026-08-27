@@ -190,7 +190,10 @@ export interface ShadowCandidate {
   draftText: string;
   suggestedTags: string[];
   sources: string[];
-  status: 'approved' | 'rejected';
+  status: 'approved' | 'rejected' | 'published';
+  publishedAt?: number;
+  publishedMessageId?: number;
+  publishedChannelId?: string;
   rejectionReason?: string;
   rejectionCode?: string;
   confidenceScore?: number;
@@ -200,6 +203,23 @@ export interface ShadowCandidate {
   correlationId?: string;
   timestamp: number;
   metadata?: Record<string, unknown>;
+}
+
+export interface ControlledPublishRequest {
+  candidateId: string;
+  targetChannel?: string;
+  correlationId?: string;
+}
+
+export interface ControlledPublishResult {
+  ok: boolean;
+  message: string;
+  candidateId: string;
+  messageId: number;
+  channelId: string;
+  publishedAt: number;
+  gateResult: PrePublicationGateResult;
+  candidate: ShadowCandidate;
 }
 
 export interface ContentScheduledPayload {

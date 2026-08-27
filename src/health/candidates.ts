@@ -289,9 +289,86 @@ export class CandidateManager {
   }
 
   /**
-   * List recent shadow candidates
+   * Check if a candidate has already been published to prevent duplicate replay transmissions
    */
-  public async listCandidates(limit = 20, filterStatus?: 'approved' | 'rejected'): Promise<ShadowCandidate[]> {
+  public async isCandidatePublished(id: string): Promise<boolean> {
+    const cand = await this.getCandidate(id);
+    if (!cand) return false;
+    return cand.status === 'published' || Boolean(cand.publishedAt) || Boolean(cand.publishedMessageId);
+  }
+
+  /**
+   * Mark an approved shadow candidate as published with full audit metadata and anti-replay markers
+   */
+  public async markCandidatePublished(
+    id: string,
+    publishDetails: {
+      messageId: number;
+      channelId: string;
+      publishedAt?: number;
+      publishedBy?: string;
+      correlationId?: string;
+    }
+  ): Promise<ShadowCandidate | null> {
+    const candidate = await this.getCandidate(id);
+    if (!candidate) {
+      logger.warn('mark_published_not_found', `Candidate ${id} not found for marking published`);
+      return null;
+    }
+
+    const publishedAt = publishDetails.publishedAt || Date.now();
+    candidate.status = 'published';
+    candidate.publishedAt = publishedAt;
+    candidate.publishedMessageId = publishDetails.messageId;
+    candidate.publishedChannelId = publishDetails.channelId;
+    candidate.metadata = {
+      ...(candidate.metadata || {}),
+      publishedAt,
+      publishedMessageId: publishDetails.messageId,
+      publishedChannelId: publishDetails.channelId,
+      publishedBy: publishDetails.publishedBy || 'owner:admin',
+      publishCorrelationId: publishDetails.correlationId,
+    };
+
+    // Update in-memory pool
+    const memoryIdx = this.inMemoryCandidates.findIndex((c) => c.id === id);
+    if (memoryIdx !== -1) {
+      this.inMemoryCandidates[memoryIdx] = candidate;
+    } else {
+      this.inMemoryCandidates.unshift(candidate);
+    }
+
+    // Persist to storage
+    try {
+      await this.storage.set(`${this.storagePrefix}${id}`, candidate, {
+        expirationTtl: 30 * 24 * 60 * 60, // 30 days
+      });
+    } catch (err) {
+      logger.error('candidate_published_storage_failed', `Failed to persist published state for candidate ${id}`, {
+        error: err,
+      });
+    }
+
+    logger.info('candidate_marked_published', `Candidate ${id} marked as PUBLISHED (messageId: ${publishDetails.messageId}, channel: ${publishDetails.channelId})`, {
+      correlationId: publishDetails.correlationId,
+      context: {
+        candidateId: id,
+        messageId: publishDetails.messageId,
+        channelId: publishDetails.channelId,
+        publishedAt,
+      },
+    });
+
+    return candidate;
+  }
+
+  /**
+   * List recent shadow candidates with optional status filter
+   */
+  public async listCandidates(
+    limit = 20,
+    filterStatus?: 'approved' | 'rejected' | 'published'
+  ): Promise<ShadowCandidate[]> {
     let pool = [...this.inMemoryCandidates];
 
     if (pool.length < limit) {
@@ -324,12 +401,14 @@ export class CandidateManager {
     total: number;
     approved: number;
     rejected: number;
+    published: number;
     avgQualityScore?: number;
     avgConfidenceScore?: number;
   }> {
     const candidates = await this.listCandidates(100);
     const approved = candidates.filter((c) => c.status === 'approved');
     const rejected = candidates.filter((c) => c.status === 'rejected');
+    const published = candidates.filter((c) => c.status === 'published');
 
     const qualityScores = candidates
       .map((c) => c.qualityScore)
@@ -352,6 +431,7 @@ export class CandidateManager {
       total: candidates.length,
       approved: approved.length,
       rejected: rejected.length,
+      published: published.length,
       avgQualityScore,
       avgConfidenceScore,
     };

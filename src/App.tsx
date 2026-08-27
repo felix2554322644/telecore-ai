@@ -1,5 +1,5 @@
 /**
- * Autonomous Telegram Channel Manager - Foundation Dashboard
+ * Autonomous Telegram Channel Manager - Foundation Dashboard (Phase 14B)
  */
 
 import React, { useEffect, useState } from 'react';
@@ -10,9 +10,11 @@ import { ControlledPublishDashboard } from './components/ControlledPublishDashbo
 import { FeedbackViewer } from './components/FeedbackViewer.tsx';
 import { HealthOverview } from './components/HealthOverview.tsx';
 import { IncidentsViewer } from './components/IncidentsViewer.tsx';
+import { OverviewCards } from './components/OverviewCards.tsx';
 import { PipelineInspector } from './components/PipelineInspector.tsx';
 import { ProductionControlViewer } from './components/ProductionControlViewer.tsx';
 import { SchedulerViewer } from './components/SchedulerViewer.tsx';
+import { SidebarNav, TabId } from './components/SidebarNav.tsx';
 import { StatusHeader } from './components/StatusHeader.tsx';
 import { TelegramManager } from './components/TelegramManager.tsx';
 import {
@@ -27,6 +29,7 @@ import {
 } from './types/index.ts';
 
 export default function App() {
+  const [activeTab, setActiveTab] = useState<TabId>('overview');
   const [health, setHealth] = useState<HealthReport | null>(null);
   const [config, setConfig] = useState<PublicConfig | null>(null);
   const [agents, setAgents] = useState<AgentMetadata[]>([]);
@@ -185,81 +188,138 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-100/60 text-slate-900 font-sans antialiased pb-16">
+    <div className="min-h-screen bg-slate-100/70 text-slate-900 font-sans antialiased flex flex-col">
       {/* Top Bar / Header */}
       <StatusHeader
         health={health}
         config={config}
         isLoading={isLoading}
         onRefresh={fetchStatus}
+        activeTab={activeTab}
+        onSelectTab={setActiveTab}
+        candidates={candidates}
+        incidents={incidents}
       />
 
-      {/* Main Content Area */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 space-y-6">
-        {/* Core Subsystem Health Cards */}
-        <HealthOverview
-          dependencies={health?.dependencies}
+      {/* Main Layout: Responsive Sidebar + Content Area */}
+      <div className="max-w-7xl mx-auto w-full px-3 sm:px-6 lg:px-8 py-4 sm:py-6 flex flex-col lg:flex-row gap-6 flex-1 items-start">
+        {/* Desktop Sidebar Navigation */}
+        <SidebarNav
+          activeTab={activeTab}
+          onSelectTab={setActiveTab}
+          health={health}
           config={config}
-        />
-
-        {/* Phase 12 Production Safety & Control Layer */}
-        <ProductionControlViewer
-          onRefresh={fetchStatus}
-        />
-
-        {/* Intelligent Topic Scheduler & Cluster Rotation */}
-        <SchedulerViewer
-          scheduler={scheduler}
-          onRefresh={fetchStatus}
-          onTriggerCycle={handleTriggerScheduledCycle}
-        />
-
-        {/* Phase 11 Feedback & Learning Loop Viewer */}
-        <FeedbackViewer
-          report={feedbackReport}
-          onRefreshFeedback={handleRefreshFeedback}
-          isLoading={isLoading}
-        />
-
-        {/* Telegram Integration & Controlled Test Publisher */}
-        <TelegramManager
-          config={config}
-          onRefresh={fetchStatus}
-        />
-
-        {/* Phase 14A Controlled Live Publishing Dashboard */}
-        <ControlledPublishDashboard
           candidates={candidates}
-          onRefresh={fetchStatus}
-          defaultChannel={config?.telegramChannelId || '@techpluseai'}
-        />
-
-        {/* Autonomous Shadow Mode Candidates Archive */}
-        <CandidatesViewer
-          candidates={candidates}
-          stats={candidateStats}
-          onRefresh={fetchStatus}
-        />
-
-        {/* 7 Core Foundation Agents */}
-        <AgentDeck agents={agents} />
-
-        {/* Orchestrator Event Bus Inspector & Simulator */}
-        <PipelineInspector
-          processedCount={processedEventsCount}
-          recentEvents={recentEvents}
-          onTriggerEvent={handleTriggerEvent}
-        />
-
-        {/* Incident Management & Self-Healing Registry */}
-        <IncidentsViewer
           incidents={incidents}
+          isLoading={isLoading}
           onRefresh={fetchStatus}
         />
 
-        {/* Cloudflare Workers Deployment & Secrets Guide */}
-        <CloudflareGuide />
-      </main>
+        {/* Dynamic Main Content Pane */}
+        <main className="flex-1 w-full min-w-0 space-y-6 pb-12">
+          {/* TAB 1: OVERVIEW & SYSTEM HEALTH */}
+          {activeTab === 'overview' && (
+            <div className="space-y-6 animate-fadeIn">
+              <OverviewCards
+                health={health}
+                config={config}
+                candidates={candidates}
+                candidateStats={candidateStats}
+                scheduler={scheduler}
+                feedbackReport={feedbackReport}
+                incidents={incidents}
+                onNavigate={(tab) => setActiveTab(tab as TabId)}
+                onTriggerScheduledCycle={handleTriggerScheduledCycle}
+                isLoading={isLoading}
+              />
+
+              {/* Subsystem Health Cards */}
+              <HealthOverview
+                dependencies={health?.dependencies}
+                config={config}
+              />
+            </div>
+          )}
+
+          {/* TAB 2: CONTROLLED PUBLISHING & CANDIDATES ARCHIVE */}
+          {activeTab === 'publishing' && (
+            <div className="space-y-6 animate-fadeIn">
+              <ControlledPublishDashboard
+                candidates={candidates}
+                onRefresh={fetchStatus}
+                defaultChannel={config?.telegramChannelId || '@techpluseai'}
+              />
+
+              <CandidatesViewer
+                candidates={candidates}
+                stats={candidateStats}
+                onRefresh={fetchStatus}
+              />
+            </div>
+          )}
+
+          {/* TAB 3: SAFETY & PRODUCTION CONTROLS */}
+          {activeTab === 'safety' && (
+            <div className="space-y-6 animate-fadeIn">
+              <ProductionControlViewer
+                onRefresh={fetchStatus}
+              />
+
+              <TelegramManager
+                config={config}
+                onRefresh={fetchStatus}
+              />
+            </div>
+          )}
+
+          {/* TAB 4: INTELLIGENT SCHEDULER & FEEDBACK LOOP */}
+          {activeTab === 'scheduler' && (
+            <div className="space-y-6 animate-fadeIn">
+              <SchedulerViewer
+                scheduler={scheduler}
+                onRefresh={fetchStatus}
+                onTriggerCycle={handleTriggerScheduledCycle}
+              />
+
+              <FeedbackViewer
+                report={feedbackReport}
+                onRefreshFeedback={handleRefreshFeedback}
+                isLoading={isLoading}
+              />
+            </div>
+          )}
+
+          {/* TAB 5: 7-AGENT CORE & EVENT PIPELINE */}
+          {activeTab === 'agents' && (
+            <div className="space-y-6 animate-fadeIn">
+              <AgentDeck agents={agents} />
+
+              <PipelineInspector
+                processedCount={processedEventsCount}
+                recentEvents={recentEvents}
+                onTriggerEvent={handleTriggerEvent}
+              />
+            </div>
+          )}
+
+          {/* TAB 6: INCIDENTS & SELF-HEALING REGISTRY */}
+          {activeTab === 'incidents' && (
+            <div className="space-y-6 animate-fadeIn">
+              <IncidentsViewer
+                incidents={incidents}
+                onRefresh={fetchStatus}
+              />
+            </div>
+          )}
+
+          {/* TAB 7: CLOUDFLARE DEPLOYMENT & SECRETS GUIDE */}
+          {activeTab === 'deployment' && (
+            <div className="space-y-6 animate-fadeIn">
+              <CloudflareGuide />
+            </div>
+          )}
+        </main>
+      </div>
     </div>
   );
 }

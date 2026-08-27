@@ -12,6 +12,13 @@
     "nodejs_compat"
   ],
 
+  // Serve the React/Vite Dashboard UI from the compiled dist directory
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+
   // Non-sensitive runtime variables (safe in repository)
   // NOTE: TELEGRAM_CHANNEL_ID, APP_URL, and secrets are configured via Cloudflare Dashboard
   // (Settings > Variables and Secrets) or `wrangler secret put`. Do NOT place empty string

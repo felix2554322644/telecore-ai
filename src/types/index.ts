@@ -53,8 +53,9 @@ export interface Env {
   APP_URL?: string;
   TELEGRAM_TEST_MODE?: string | boolean;
 
-  // Cloudflare Storage Bindings (optional in foundation, fallback to in-memory)
+  // Cloudflare Storage & Asset Bindings (optional in foundation, fallback to in-memory)
   STORAGE_KV?: KVNamespace;
+  ASSETS?: { fetch: (request: Request | string, init?: RequestInit) => Promise<Response> } | any;
 }
 
 export interface PublicConfig {

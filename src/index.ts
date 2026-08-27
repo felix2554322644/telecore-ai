@@ -97,6 +97,39 @@ export default {
       });
     }
 
+    // ----------------------------------------------------------------------
+    // 0. Static Frontend Assets & React Dashboard (Cloudflare Workers Assets)
+    // ----------------------------------------------------------------------
+    const isApiOrBackendRoute =
+      pathname === '/health' ||
+      pathname === '/status' ||
+      pathname.startsWith('/api') ||
+      pathname.startsWith('/webhooks');
+
+    if (!isApiOrBackendRoute) {
+      if (env.ASSETS && typeof env.ASSETS.fetch === 'function') {
+        try {
+          const assetResponse = await env.ASSETS.fetch(request);
+          if (assetResponse.status !== 404) {
+            return assetResponse;
+          }
+          // Single Page Application fallback: If not found and GET, fetch index.html
+          if (method === 'GET') {
+            const indexRequest = new Request(new URL('/index.html', request.url), request);
+            const indexResponse = await env.ASSETS.fetch(indexRequest);
+            if (indexResponse.status < 400) {
+              return indexResponse;
+            }
+          }
+        } catch (assetErr) {
+          logger.warn('static_asset_fetch_failed', 'Failed to fetch static asset via env.ASSETS', {
+            error: String(assetErr),
+            context: { pathname },
+          });
+        }
+      }
+    }
+
     try {
       const app = createAppContext(env);
 
@@ -919,12 +952,14 @@ export default {
       }
 
 
-      // Root endpoint fallback
-      if (method === 'GET' && pathname === '/') {
+      // ----------------------------------------------------------------------
+      // 13. API Endpoint Catalog: GET /api
+      // ----------------------------------------------------------------------
+      if (method === 'GET' && (pathname === '/api' || pathname === '/api/endpoints' || pathname === '/api/info')) {
         const publicConfig = getPublicConfig(env, request.url);
         return jsonResponse({
           service: 'TeleCore AI - Autonomous Telegram Channel Manager',
-          phase: 'Phase 13: Controlled Live Publishing Readiness (Owner-Authorized One-Post Gate)',
+          phase: 'Phase 14A: Controlled Live Publishing Readiness (Owner-Authorized One-Post Gate)',
           version: publicConfig.version,
           status: 'online',
           testMode: publicConfig.testMode,
@@ -958,6 +993,52 @@ export default {
             'POST /api/test/event',
           ],
         });
+      }
+
+      // Root endpoint fallback (if not served by static assets binding)
+      if (method === 'GET' && pathname === '/') {
+        if (request.headers.get('Accept')?.includes('application/json')) {
+          const publicConfig = getPublicConfig(env, request.url);
+          return jsonResponse({
+            service: 'TeleCore AI - Autonomous Telegram Channel Manager',
+            phase: 'Phase 14A: Controlled Live Publishing Readiness (Owner-Authorized One-Post Gate)',
+            version: publicConfig.version,
+            status: 'online',
+            testMode: publicConfig.testMode,
+            shadowMode: true,
+          });
+        }
+
+        // Return dashboard HTML entrypoint fallback
+        return new Response(
+          `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TeleCore AI - Autonomous Telegram Channel Manager</title>
+    <meta name="description" content="Production-ready Cloudflare Workers foundation for TeleCore AI Telegram channel manager." />
+  </head>
+  <body class="bg-slate-900 text-slate-100 min-h-screen">
+    <div id="root">
+      <div class="flex items-center justify-center min-h-screen">
+        <div class="text-center p-8 bg-slate-800 rounded-xl border border-slate-700 shadow-xl max-w-md mx-auto">
+          <h1 class="text-2xl font-bold text-white mb-2">TeleCore AI</h1>
+          <p class="text-slate-400 mb-4">Autonomous Telegram Channel Manager</p>
+          <a href="/api/status" class="inline-block px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg transition-colors">View System Status</a>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>`,
+          {
+            status: 200,
+            headers: {
+              'Content-Type': 'text/html; charset=utf-8',
+              'X-Content-Type-Options': 'nosniff',
+            },
+          }
+        );
       }
 
       throw new NotFoundError(`Endpoint not found: ${method} ${pathname}`);

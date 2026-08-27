@@ -6,6 +6,7 @@ import React, { useEffect, useState } from 'react';
 import { AgentDeck } from './components/AgentDeck.tsx';
 import { CandidatesViewer } from './components/CandidatesViewer.tsx';
 import { CloudflareGuide } from './components/CloudflareGuide.tsx';
+import { ControlledPublishDashboard } from './components/ControlledPublishDashboard.tsx';
 import { FeedbackViewer } from './components/FeedbackViewer.tsx';
 import { HealthOverview } from './components/HealthOverview.tsx';
 import { IncidentsViewer } from './components/IncidentsViewer.tsx';
@@ -226,7 +227,14 @@ export default function App() {
           onRefresh={fetchStatus}
         />
 
-        {/* Autonomous Shadow Mode Candidates */}
+        {/* Phase 14A Controlled Live Publishing Dashboard */}
+        <ControlledPublishDashboard
+          candidates={candidates}
+          onRefresh={fetchStatus}
+          defaultChannel={config?.telegramChannelId || '@techpluseai'}
+        />
+
+        {/* Autonomous Shadow Mode Candidates Archive */}
         <CandidatesViewer
           candidates={candidates}
           stats={candidateStats}

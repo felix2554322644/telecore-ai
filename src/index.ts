@@ -45,7 +45,7 @@ export function createAppContext(env: Partial<Env>) {
   const candidateManager = new CandidateManager(storage);
   const telegramClient = new TelegramClient(env.TELEGRAM_BOT_TOKEN);
   const geminiService = new GeminiService(env.GEMINI_API_KEY);
-  const orchestrator = new Orchestrator(telegramClient, incidentManager, env, candidateManager, geminiService);
+  const orchestrator = new Orchestrator(telegramClient, incidentManager, env, candidateManager, geminiService, storage);
   const webhookHandler = new TelegramWebhookHandler(env.TELEGRAM_WEBHOOK_SECRET, orchestrator);
   const scheduler = new IntelligentScheduler(
     storage,
@@ -142,8 +142,45 @@ export default {
             recent: recentCandidates,
           },
           scheduler: schedulerStatus,
+          feedback: schedulerStatus?.feedbackSummary,
           dependencies: health.dependencies,
           incidents,
+        });
+      }
+
+      // ----------------------------------------------------------------------
+      // 3. GET /api/analytics/feedback - Feedback & Learning Loop Report
+      // ----------------------------------------------------------------------
+      if (method === 'GET' && (pathname === '/api/analytics/feedback' || pathname === '/api/admin/analytics/feedback')) {
+        if (pathname === '/api/admin/analytics/feedback') {
+          const authHeader = request.headers.get('Authorization');
+          requireAdminAuth(authHeader, env, 'view admin feedback learning report');
+        }
+
+        const report = await app.orchestrator.analyst.getFeedbackReport();
+        return jsonResponse({
+          ok: true,
+          report,
+          shadowMode: true,
+        });
+      }
+
+      // ----------------------------------------------------------------------
+      // 3b. POST /api/analytics/feedback/refresh - Force Recalculate Feedback Metrics
+      // ----------------------------------------------------------------------
+      if (method === 'POST' && (pathname === '/api/analytics/feedback/refresh' || pathname === '/api/admin/analytics/feedback/refresh')) {
+        const authHeader = request.headers.get('Authorization');
+        if (pathname === '/api/admin/analytics/feedback/refresh' || (authHeader && env.ADMIN_SECRET)) {
+          requireAdminAuth(authHeader, env, 'refresh feedback learning metrics');
+        }
+
+        const report = await app.orchestrator.analyst.generateFeedbackReport();
+        await app.orchestrator.publish('analytics.feedback_updated', report);
+
+        return jsonResponse({
+          ok: true,
+          message: `Feedback analysis refreshed across ${report.totalEvaluatedCandidates} candidates and ${Object.keys(report.clusterPerformance).length} clusters`,
+          report,
         });
       }
 
@@ -518,7 +555,7 @@ export default {
         const publicConfig = getPublicConfig(env, request.url);
         return jsonResponse({
           service: 'TeleCore AI - Autonomous Telegram Channel Manager',
-          phase: 'Telegram Integration & Foundation Phase (Phase 10: Intelligent Scheduling Active)',
+          phase: 'Telegram Integration & Foundation Phase (Phase 11: Feedback & Learning Loop Active)',
           version: publicConfig.version,
           status: 'online',
           testMode: publicConfig.testMode,
@@ -539,6 +576,8 @@ export default {
             'GET  /api/admin/candidates/:id',
             'GET  /api/scheduler',
             'POST /api/scheduler/run',
+            'GET  /api/analytics/feedback',
+            'POST /api/analytics/feedback/refresh',
             'POST /api/test/event',
           ],
         });

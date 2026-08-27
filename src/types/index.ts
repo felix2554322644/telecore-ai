@@ -104,7 +104,8 @@ export type EventType =
   | 'system.health_checked'
   | 'scheduler.cycle_started'
   | 'scheduler.cycle_completed'
-  | 'scheduler.cycle_failed';
+  | 'scheduler.cycle_failed'
+  | 'analytics.feedback_updated';
 
 export interface BaseEvent<T = unknown> {
   id: string;
@@ -502,7 +503,60 @@ export interface SchedulerStatus {
   lastScheduledAt?: number;
   recentCycles: ScheduledCycleRecord[];
   avoidedTopicsCount: number;
-  clusters: Array<{ id: string; name: string; topicCount: number }>;
+  clusters: Array<{ id: string; name: string; topicCount: number; learnedWeight?: number }>;
+  feedbackSummary?: {
+    totalEvaluated: number;
+    overallApprovalRate: number;
+    overallAvgQuality: number;
+    topClusters: string[];
+  };
+}
+
+export interface ClusterPerformanceMetrics {
+  clusterId: string;
+  clusterName: string;
+  totalGenerated: number;
+  approvedCount: number;
+  rejectedCount: number;
+  approvalRate: number; // 0.0 to 1.0
+  avgQualityScore: number; // 0.0 to 1.0
+  avgConfidenceScore: number; // 0.0 to 1.0
+  qualityBreakdownAvg: QualityBreakdown;
+  commonRejectionCodes: Array<{ code: string; count: number }>;
+  learnedWeight: number; // Dynamic weight (e.g. 0.5 to 2.5) used to influence scheduler rotation
+  sampleCount: number;
+  lastEvaluatedAt: number;
+}
+
+export interface ContentCharacteristicMetrics {
+  approvedLengthStats: {
+    avgCharCount: number;
+    avgWordCount: number;
+    minWordCount: number;
+    maxWordCount: number;
+  };
+  rejectedLengthStats: {
+    avgCharCount: number;
+    avgWordCount: number;
+  };
+  optimalWordRange: { min: number; max: number };
+  avgSourcesCount: number;
+  avgTagsCount: number;
+  topPerformingTags: Array<{ tag: string; count: number; approvalRate: number }>;
+  claimVerificationRate: number;
+  highScoringTopics: Array<{ topic: string; qualityScore: number; clusterName?: string }>;
+}
+
+export interface FeedbackLearningReport {
+  generatedAt: number;
+  totalEvaluatedCandidates: number;
+  overallApprovalRate: number;
+  overallAvgQuality: number;
+  clusterPerformance: Record<string, ClusterPerformanceMetrics>;
+  contentCharacteristics: ContentCharacteristicMetrics;
+  topPerformingClusters: string[];
+  underperformingClusters: string[];
+  recommendations: string[];
 }
 
 export type {

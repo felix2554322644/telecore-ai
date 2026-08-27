@@ -24,6 +24,7 @@ import {
   EventType,
   IAgent,
   Incident,
+  IStorage,
 } from '../types/index.ts';
 import { Logger } from '../utils/logger.ts';
 
@@ -43,6 +44,7 @@ export class Orchestrator {
   private recentEvents: Array<{ id: string; type: EventType; timestamp: number }> = [];
   private incidentManager?: IncidentManager;
   private candidateManager?: CandidateManager;
+  private storage?: IStorage;
   private env: Partial<Env>;
 
   // Registered agents
@@ -59,10 +61,12 @@ export class Orchestrator {
     incidentManager?: IncidentManager,
     env?: Partial<Env>,
     candidateManager?: CandidateManager,
-    geminiService?: IGeminiService
+    geminiService?: IGeminiService,
+    storage?: IStorage
   ) {
     this.incidentManager = incidentManager;
     this.candidateManager = candidateManager;
+    this.storage = storage;
     this.env = env || {};
 
     // Initialize agent instances
@@ -71,7 +75,7 @@ export class Orchestrator {
     this.writer = new WriterAgent();
     this.factChecker = new FactCheckerAgent(geminiService);
     this.publisher = new PublisherAgent(telegramClient, this.env);
-    this.analyst = new AnalystAgent();
+    this.analyst = new AnalystAgent(storage, candidateManager);
     this.repairAgent = new RepairAgent();
 
     // Register default agents
@@ -371,10 +375,22 @@ export class Orchestrator {
       );
     });
 
-    // 5. Content published -> analyst agent performance tracking
+    // 5. Candidate recorded / Content published -> analyst agent performance tracking & feedback loop
+    this.subscribe('candidate.recorded', async (event) => {
+      try {
+        await this.analyst.execute({ refreshFeedback: true }, event.correlationId);
+      } catch (err) {
+        logger.warn('analyst_candidate_feedback_failed', 'Failed to update feedback on candidate.recorded', { error: err });
+      }
+    });
+
     this.subscribe('content.published', async (event) => {
-      const publishedPayload = event.payload as any;
-      await this.analyst.execute({ channelId: publishedPayload.channelId }, event.correlationId);
+      try {
+        const publishedPayload = event.payload as any;
+        await this.analyst.execute({ channelId: publishedPayload?.channelId }, event.correlationId);
+      } catch (err) {
+        logger.warn('analyst_publish_feedback_failed', 'Failed to update feedback on content.published', { error: err });
+      }
     });
 
     // 6. Incident created -> repair agent evaluation

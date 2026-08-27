@@ -298,27 +298,59 @@ export class IntelligentScheduler {
     const state = await this.getState();
     const avoidanceTopics = options?.avoidanceTopics || (await this.getAvoidanceTopicsList());
 
-    // Compute rotated category index
-    let nextIndex =
-      typeof options?.forceCategoryIndex === 'number'
-        ? options.forceCategoryIndex % this.clusters.length
-        : (state.lastCategoryIndex + 1) % this.clusters.length;
+    // Compute rotated category index factoring in learned feedback
+    const feedbackReport = await this.orchestrator.analyst.getFeedbackReport();
+    const clusterWeights = await this.orchestrator.analyst.getClusterWeights();
+
+    let nextIndex: number;
+
+    if (typeof options?.forceCategoryIndex === 'number') {
+      nextIndex = Math.abs(options.forceCategoryIndex) % this.clusters.length;
+    } else {
+      const defaultIndex = (state.lastCategoryIndex + 1) % this.clusters.length;
+      const defaultCluster = this.clusters[defaultIndex];
+      const defaultWeight = clusterWeights[defaultCluster.id] ?? 1.0;
+
+      // If the default cluster is penalized (< 0.60), check if another cluster has a much higher learned weight
+      if (defaultWeight < 0.60) {
+        // Find cluster with highest learned weight that is not the same as state.lastCategoryIndex
+        let bestIndex = defaultIndex;
+        let highestWeight = defaultWeight;
+
+        this.clusters.forEach((c, idx) => {
+          if (idx !== state.lastCategoryIndex) {
+            const w = clusterWeights[c.id] ?? 1.0;
+            if (w > highestWeight) {
+              highestWeight = w;
+              bestIndex = idx;
+            }
+          }
+        });
+        nextIndex = bestIndex;
+      } else {
+        nextIndex = defaultIndex;
+      }
+    }
 
     if (nextIndex < 0) nextIndex = 0;
     const targetCluster = this.clusters[nextIndex];
+    const targetWeight = clusterWeights[targetCluster.id] ?? 1.0;
 
-    logger.info('scheduler_topic_selection_started', `Selecting topic for cluster: "${targetCluster.name}" (${targetCluster.id})`, {
+    logger.info('scheduler_topic_selection_started', `Selecting topic for cluster: "${targetCluster.name}" (${targetCluster.id}) with learned weight ${targetWeight}x`, {
       context: {
         categoryIndex: nextIndex,
+        learnedWeight: targetWeight,
         avoidanceCount: avoidanceTopics.length,
         hasGemini: Boolean(this.geminiService?.isConfigured()),
+        topTags: feedbackReport.contentCharacteristics.topPerformingTags.slice(0, 3).map((t) => t.tag),
       },
     });
 
-    // 1. Try Gemini Dynamic Synthesis if configured
+    // 1. Try Gemini Dynamic Synthesis if configured, injecting winning content traits
     if (this.geminiService && this.geminiService.isConfigured()) {
       try {
-        const promptTopic = `High-signal emerging innovation in ${targetCluster.name}`;
+        const topTags = feedbackReport.contentCharacteristics.topPerformingTags.slice(0, 3).map((t) => t.tag).join(', ');
+        const promptTopic = `High-signal emerging innovation in ${targetCluster.name}${topTags ? ` focusing on ${topTags}` : ''}`;
         const research = await this.geminiService.performResearch({
           topic: promptTopic,
           niche: 'AI + technology + automation',
@@ -330,7 +362,7 @@ export class IntelligentScheduler {
           const similarityCheck = this.isTopicTooSimilar(research.topic, avoidanceTopics);
           if (!similarityCheck.isSimilar) {
             logger.info('scheduler_topic_selected_gemini', `Gemini dynamically generated novel topic: "${research.topic}"`, {
-              context: { cluster: targetCluster.id, topic: research.topic },
+              context: { cluster: targetCluster.id, topic: research.topic, learnedWeight: targetWeight },
             });
             return {
               topic: research.topic.trim(),
@@ -580,6 +612,22 @@ export class IntelligentScheduler {
     const activeIdx = state.lastCategoryIndex >= 0 ? state.lastCategoryIndex % this.clusters.length : 0;
     const nextIdx = (activeIdx + 1) % this.clusters.length;
 
+    let clusterWeights: Record<string, number> = {};
+    let feedbackSummary: SchedulerStatus['feedbackSummary'] | undefined;
+
+    try {
+      const report = await this.orchestrator.analyst.getFeedbackReport();
+      clusterWeights = await this.orchestrator.analyst.getClusterWeights();
+      feedbackSummary = {
+        totalEvaluated: report.totalEvaluatedCandidates,
+        overallApprovalRate: report.overallApprovalRate,
+        overallAvgQuality: report.overallAvgQuality,
+        topClusters: report.topPerformingClusters,
+      };
+    } catch {
+      // Graceful fallback
+    }
+
     return {
       activeCategory: this.clusters[activeIdx]?.name || 'Autonomous Agents',
       nextCategory: this.clusters[nextIdx]?.name || 'Edge LLM Inference',
@@ -594,7 +642,9 @@ export class IntelligentScheduler {
         id: c.id,
         name: c.name,
         topicCount: c.topics.length,
+        learnedWeight: clusterWeights[c.id] ?? 1.0,
       })),
+      feedbackSummary,
     };
   }
 }

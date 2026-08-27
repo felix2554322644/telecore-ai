@@ -48,11 +48,11 @@ export const SchedulerViewer: React.FC<SchedulerViewerProps> = ({
             <Calendar className="w-5 h-5 text-indigo-600" />
             <h2 className="text-lg font-semibold text-slate-900">Intelligent Topic Scheduler</h2>
             <span className="px-2 py-0.5 text-xs font-medium rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200">
-              Phase 10: Topic Rotation
+              Phase 11: Feedback-Guided Rotation
             </span>
           </div>
           <p className="text-xs text-slate-500 mt-1">
-            Autonomous cluster rotation with similarity avoidance & dynamic AI topic generation (Shadow Mode).
+            Autonomous cluster rotation biased by learned quality feedback, similarity avoidance & dynamic AI topic generation (Shadow Mode).
           </p>
         </div>
 
@@ -161,11 +161,18 @@ export const SchedulerViewer: React.FC<SchedulerViewerProps> = ({
                   <span className="font-medium text-slate-800 truncate" title={cluster.name}>
                     {idx + 1}. {cluster.name}
                   </span>
-                  {isActive && (
-                    <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-600 text-white">
-                      Active
-                    </span>
-                  )}
+                  <div className="flex items-center gap-1">
+                    {cluster.learnedWeight !== undefined && (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-100 text-slate-600 border border-slate-200" title="Learned dynamic weight">
+                        {cluster.learnedWeight}x
+                      </span>
+                    )}
+                    {isActive && (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-600 text-white">
+                        Active
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className="flex items-center gap-2 text-[11px] text-slate-500">
                   <span>{cluster.topicCount} curated topics</span>

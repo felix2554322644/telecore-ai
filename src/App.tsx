@@ -6,6 +6,7 @@ import React, { useEffect, useState } from 'react';
 import { AgentDeck } from './components/AgentDeck.tsx';
 import { CandidatesViewer } from './components/CandidatesViewer.tsx';
 import { CloudflareGuide } from './components/CloudflareGuide.tsx';
+import { FeedbackViewer } from './components/FeedbackViewer.tsx';
 import { HealthOverview } from './components/HealthOverview.tsx';
 import { IncidentsViewer } from './components/IncidentsViewer.tsx';
 import { PipelineInspector } from './components/PipelineInspector.tsx';
@@ -15,6 +16,7 @@ import { TelegramManager } from './components/TelegramManager.tsx';
 import {
   AgentMetadata,
   EventType,
+  FeedbackLearningReport,
   HealthReport,
   Incident,
   PublicConfig,
@@ -32,6 +34,7 @@ export default function App() {
   const [candidates, setCandidates] = useState<ShadowCandidate[]>([]);
   const [candidateStats, setCandidateStats] = useState<{ total: number; approved: number; rejected: number } | undefined>(undefined);
   const [scheduler, setScheduler] = useState<SchedulerStatus | null>(null);
+  const [feedbackReport, setFeedbackReport] = useState<FeedbackLearningReport | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
   const fetchStatus = async () => {
@@ -106,6 +109,19 @@ export default function App() {
       } catch {
         // Keep scheduler from /api/status
       }
+
+      // 6. Fetch Feedback Learning Report
+      try {
+        const fbRes = await fetch('/api/analytics/feedback');
+        if (fbRes.ok) {
+          const fbData = await fbRes.json();
+          if (fbData.report) {
+            setFeedbackReport(fbData.report);
+          }
+        }
+      } catch {
+        // Fallback gracefully
+      }
     } catch (err) {
       console.error('Failed to fetch system telemetry:', err);
     } finally {
@@ -150,6 +166,22 @@ export default function App() {
     }
   };
 
+  const handleRefreshFeedback = async () => {
+    try {
+      const res = await fetch('/api/analytics/feedback/refresh', {
+        method: 'POST',
+      });
+      const data = await res.json();
+      if (data.report) {
+        setFeedbackReport(data.report);
+      }
+      await fetchStatus();
+    } catch (err) {
+      console.error('Failed to refresh feedback report:', err);
+      throw err;
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-100/60 text-slate-900 font-sans antialiased pb-16">
       {/* Top Bar / Header */}
@@ -173,6 +205,13 @@ export default function App() {
           scheduler={scheduler}
           onRefresh={fetchStatus}
           onTriggerCycle={handleTriggerScheduledCycle}
+        />
+
+        {/* Phase 11 Feedback & Learning Loop Viewer */}
+        <FeedbackViewer
+          report={feedbackReport}
+          onRefreshFeedback={handleRefreshFeedback}
+          isLoading={isLoading}
         />
 
         {/* Telegram Integration & Controlled Test Publisher */}

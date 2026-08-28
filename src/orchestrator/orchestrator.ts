@@ -83,7 +83,7 @@ export class Orchestrator {
     // Initialize agent instances
     this.researcher = new ResearcherAgent(geminiService);
     this.strategist = new StrategistAgent();
-    this.writer = new WriterAgent();
+    this.writer = new WriterAgent(geminiService);
     this.factChecker = new FactCheckerAgent(geminiService);
     this.publisher = new PublisherAgent(telegramClient, this.env, this.productionControl);
     this.analyst = new AnalystAgent(storage, candidateManager);
@@ -212,6 +212,10 @@ export class Orchestrator {
             suggestedSources: result.data.suggestedSources,
             relevanceScore: result.data.relevanceScore,
             targetFormat: 'short_tip',
+            contentType: result.data.contentType,
+            primaryEntity: result.data.primaryEntity,
+            developmentSummary: result.data.developmentSummary,
+            groundedClaims: result.data.groundedClaims,
           },
           event.correlationId
         );
@@ -228,6 +232,10 @@ export class Orchestrator {
         keyTakeaways: contentReq.keyTakeaways || [],
         suggestedSources: contentReq.suggestedSources || [],
         relevanceScore: contentReq.relevanceScore || 0.85,
+        contentType: contentReq.contentType,
+        primaryEntity: contentReq.primaryEntity,
+        developmentSummary: contentReq.developmentSummary,
+        groundedClaims: contentReq.groundedClaims,
       };
 
       const strategyResult = await this.strategist.execute(researchOutput, event.correlationId);
@@ -240,6 +248,10 @@ export class Orchestrator {
             keyTakeaways: researchOutput.keyTakeaways,
             suggestedSources: researchOutput.suggestedSources,
             category: researchOutput.category,
+            contentType: strategyResult.data.contentType || researchOutput.contentType,
+            primaryEntity: strategyResult.data.primaryEntity || researchOutput.primaryEntity,
+            developmentSummary: researchOutput.developmentSummary,
+            groundedClaims: researchOutput.groundedClaims,
           },
           event.correlationId
         );

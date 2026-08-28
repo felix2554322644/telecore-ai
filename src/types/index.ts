@@ -135,6 +135,25 @@ export interface ContentRequestedPayload {
   editorialTone?: string;
 }
 
+export type ContentType =
+  | 'NEWS'
+  | 'PRODUCT_RELEASE'
+  | 'RESEARCH'
+  | 'EXPLAINER'
+  | 'BENCHMARK'
+  | 'ANALYSIS';
+
+export type ClaimType = 'sourced_fact' | 'observation' | 'inference' | 'opinion';
+
+export interface GroundedClaim {
+  claim: string;
+  source: string;
+  claimType: ClaimType;
+  verifiedInSource: boolean;
+  isQuantitative?: boolean;
+  critique?: string;
+}
+
 export interface ContentGeneratedPayload {
   contentId: string;
   topic: string;
@@ -142,6 +161,10 @@ export interface ContentGeneratedPayload {
   suggestedTags: string[];
   sources: string[];
   mediaPrompt?: string;
+  contentType?: ContentType;
+  primaryEntity?: string;
+  developmentSummary?: string;
+  groundedClaims?: GroundedClaim[];
 }
 
 export interface QualityBreakdown {
@@ -150,18 +173,28 @@ export interface QualityBreakdown {
   actionableUtility: number;
   clarityAndTone: number;
   sourceGrounding: number;
+  claimGrounding?: number;
+  telegramSuitability?: number;
 }
 
 export interface ContentCheckedPayload {
   contentId: string;
   passed: boolean;
-  claimsVerified: Array<{ claim: string; verified: boolean; citation?: string }>;
+  claimsVerified: Array<{
+    claim: string;
+    verified: boolean;
+    citation?: string;
+    critique?: string;
+    claimType?: ClaimType;
+    isQuantitative?: boolean;
+  }>;
   confidenceScore: number;
   qualityScore?: number;
   qualityBreakdown?: QualityBreakdown;
   rejectionReason?: string;
   rejectionCode?: string;
   notes?: string;
+  contentType?: ContentType;
 }
 
 export interface ContentApprovedPayload {

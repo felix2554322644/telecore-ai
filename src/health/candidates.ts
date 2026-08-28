@@ -246,6 +246,12 @@ export class CandidateManager {
       await this.storage.set(`${this.storagePrefix}${id}`, candidate, {
         expirationTtl: 30 * 24 * 60 * 60, // 30 days
       });
+      // Maintain persistent candidate ID index for reliable cross-request recovery
+      const existingIndex = (await this.storage.get<string[]>(`${this.storagePrefix}_index`)) || [];
+      const updatedIndex = [id, ...existingIndex.filter((existingId) => existingId !== id)].slice(0, 100);
+      await this.storage.set(`${this.storagePrefix}_index`, updatedIndex, {
+        expirationTtl: 30 * 24 * 60 * 60,
+      });
     } catch (err) {
       logger.error('candidate_storage_failed', `Failed to persist candidate ${id} in storage`, {
         error: err,
@@ -369,21 +375,40 @@ export class CandidateManager {
     limit = 20,
     filterStatus?: 'approved' | 'rejected' | 'published'
   ): Promise<ShadowCandidate[]> {
-    let pool = [...this.inMemoryCandidates];
+    const candidateMap = new Map<string, ShadowCandidate>();
 
-    if (pool.length < limit) {
-      try {
+    // 1. Seed with in-memory candidates
+    for (const cand of this.inMemoryCandidates) {
+      candidateMap.set(cand.id, cand);
+    }
+
+    // 2. Fetch candidates from persistent storage via index and key scan
+    try {
+      const indexedIds = (await this.storage.get<string[]>(`${this.storagePrefix}_index`)) || [];
+      for (const id of indexedIds) {
+        if (!candidateMap.has(id)) {
+          const cand = await this.storage.get<ShadowCandidate>(`${this.storagePrefix}${id}`);
+          if (cand) candidateMap.set(cand.id, cand);
+        }
+      }
+
+      // Fallback key scan if index is missing or small
+      if (candidateMap.size < limit) {
         const keys = await this.storage.list(this.storagePrefix);
-        for (const key of keys.slice(0, limit)) {
-          if (!pool.some((c) => `${this.storagePrefix}${c.id}` === key)) {
+        for (const key of keys) {
+          if (key.endsWith('_index')) continue;
+          const id = key.replace(this.storagePrefix, '');
+          if (!candidateMap.has(id)) {
             const cand = await this.storage.get<ShadowCandidate>(key);
-            if (cand) pool.push(cand);
+            if (cand) candidateMap.set(cand.id, cand);
           }
         }
-      } catch (err) {
-        logger.error('candidate_list_failed', 'Failed to list candidates from storage', { error: err });
       }
+    } catch (err) {
+      logger.error('candidate_list_failed', 'Failed to list candidates from storage', { error: err });
     }
+
+    let pool = Array.from(candidateMap.values());
 
     if (filterStatus) {
       pool = pool.filter((c) => c.status === filterStatus);

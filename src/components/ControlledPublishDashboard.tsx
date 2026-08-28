@@ -24,19 +24,41 @@ interface ControlledPublishDashboardProps {
   candidates: ShadowCandidate[];
   onRefresh: () => void;
   defaultChannel?: string;
+  adminToken?: string;
+  setAdminToken?: (token: string) => void;
+  onTriggerShadowCycle?: () => Promise<any>;
 }
 
 export const ControlledPublishDashboard: React.FC<ControlledPublishDashboardProps> = ({
   candidates,
   onRefresh,
   defaultChannel = '@techpluseai',
+  adminToken: propAdminToken,
+  setAdminToken: propSetAdminToken,
+  onTriggerShadowCycle,
 }) => {
-  const [adminToken, setAdminToken] = useState<string>('');
+  const [localAdminToken, setLocalAdminToken] = useState<string>(() => {
+    return propAdminToken ?? (typeof localStorage !== 'undefined' ? localStorage.getItem('telecore_admin_token') || '' : '');
+  });
+
+  const adminToken = propAdminToken !== undefined ? propAdminToken : localAdminToken;
+  const updateAdminToken = (token: string) => {
+    setLocalAdminToken(token);
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('telecore_admin_token', token);
+    }
+    if (propSetAdminToken) {
+      propSetAdminToken(token);
+    }
+  };
+
+  const [tokenStatus, setTokenStatus] = useState<'none' | 'checking' | 'valid' | 'invalid'>('none');
   const [showToken, setShowToken] = useState<boolean>(false);
   const [targetChannel, setTargetChannel] = useState<string>('');
   const [selectedCandidate, setSelectedCandidate] = useState<ShadowCandidate | null>(null);
   const [showConfirmModal, setShowConfirmModal] = useState<boolean>(false);
   const [isPublishing, setIsPublishing] = useState<boolean>(false);
+  const [isGeneratingShadow, setIsGeneratingShadow] = useState<boolean>(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [publishResult, setPublishResult] = useState<{
     success: boolean;
@@ -48,6 +70,74 @@ export const ControlledPublishDashboard: React.FC<ControlledPublishDashboardProp
     gateFailures?: string[];
     details?: unknown;
   } | null>(null);
+
+  // Validate admin token against backend
+  React.useEffect(() => {
+    if (!adminToken.trim()) {
+      setTokenStatus('none');
+      return;
+    }
+
+    let isMounted = true;
+    setTokenStatus('checking');
+
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch('/api/admin/candidates?limit=1', {
+          headers: {
+            Authorization: `Bearer ${adminToken.trim()}`,
+          },
+        });
+        if (!isMounted) return;
+        if (res.ok) {
+          setTokenStatus('valid');
+        } else if (res.status === 401 || res.status === 403) {
+          setTokenStatus('invalid');
+        } else {
+          setTokenStatus('valid'); // Other non-auth response
+        }
+      } catch {
+        if (isMounted) setTokenStatus('none');
+      }
+    }, 400);
+
+    return () => {
+      isMounted = false;
+      clearTimeout(timer);
+    };
+  }, [adminToken]);
+
+  const handleGenerateShadowCandidate = async () => {
+    setIsGeneratingShadow(true);
+    setPublishResult(null);
+    try {
+      if (onTriggerShadowCycle) {
+        await onTriggerShadowCycle();
+      } else {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (adminToken.trim()) {
+          headers['Authorization'] = `Bearer ${adminToken.trim()}`;
+        }
+        const res = await fetch('/api/scheduler/run', {
+          method: 'POST',
+          headers,
+        });
+        await res.json();
+      }
+      await onRefresh();
+      setPublishResult({
+        success: true,
+        message: 'Shadow research cycle executed successfully! A new candidate has been synthesized, quality-scored, and recorded in shadow storage.',
+      });
+    } catch (err: any) {
+      setPublishResult({
+        success: false,
+        message: `Shadow research cycle failed: ${err.message || 'Unknown execution error'}`,
+      });
+    } finally {
+      setIsGeneratingShadow(false);
+    }
+  };
 
   // Filter for approved unpublished candidates (primary focus of this dashboard)
   const approvedUnpublishedCandidates = candidates.filter(
@@ -172,6 +262,16 @@ export const ControlledPublishDashboard: React.FC<ControlledPublishDashboardProp
             Autonomous: Disabled
           </span>
           <button
+            id="btn-run-shadow-cycle-header"
+            onClick={handleGenerateShadowCandidate}
+            disabled={isGeneratingShadow}
+            className="text-xs text-white font-medium px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 flex items-center gap-1.5 cursor-pointer shadow-xs transition"
+            title="Execute one shadow research and synthesis cycle to produce a test candidate"
+          >
+            <Sparkles className={`h-3.5 w-3.5 ${isGeneratingShadow ? 'animate-spin' : ''}`} />
+            <span>{isGeneratingShadow ? 'Generating Candidate...' : 'Run Shadow Cycle'}</span>
+          </button>
+          <button
             id="btn-refresh-controlled-publishing"
             onClick={onRefresh}
             className="text-xs text-slate-700 hover:text-slate-900 font-medium px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-200 flex items-center gap-1.5 cursor-pointer transition"
@@ -189,14 +289,24 @@ export const ControlledPublishDashboard: React.FC<ControlledPublishDashboardProp
             <Lock className="h-3.5 w-3.5 text-slate-600" />
             Owner Authorization & Target Binding
           </span>
-          {adminToken.trim() ? (
-            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-md">
-              <CheckCircle2 className="h-3 w-3" />
-              Admin Token Present
+          {tokenStatus === 'valid' ? (
+            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-md border border-emerald-200">
+              <CheckCircle2 className="h-3 w-3 text-emerald-600" />
+              Admin Token Verified
+            </span>
+          ) : tokenStatus === 'invalid' ? (
+            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-700 bg-rose-100 px-2 py-0.5 rounded-md border border-rose-200">
+              <XCircle className="h-3 w-3 text-rose-600" />
+              Admin Token Rejected (401 Unauthorized)
+            </span>
+          ) : tokenStatus === 'checking' ? (
+            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-700 bg-blue-100 px-2 py-0.5 rounded-md border border-blue-200">
+              <RefreshCw className="h-3 w-3 animate-spin text-blue-600" />
+              Verifying Token...
             </span>
           ) : (
-            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-md">
-              <AlertTriangle className="h-3 w-3" />
+            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-md border border-amber-200">
+              <AlertTriangle className="h-3 w-3 text-amber-600" />
               Token Required for Dispatch
             </span>
           )}
@@ -212,7 +322,7 @@ export const ControlledPublishDashboard: React.FC<ControlledPublishDashboardProp
                 id="input-admin-secret-token"
                 type={showToken ? 'text' : 'password'}
                 value={adminToken}
-                onChange={(e) => setAdminToken(e.target.value)}
+                onChange={(e) => updateAdminToken(e.target.value)}
                 placeholder="Enter ADMIN_SECRET..."
                 className="w-full text-xs font-mono px-3 py-2 pr-9 rounded-lg border border-slate-300 bg-white text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
               />
@@ -350,12 +460,23 @@ export const ControlledPublishDashboard: React.FC<ControlledPublishDashboardProp
 
       {/* Candidates List / Grid */}
       {activeTab === 'approved' && approvedUnpublishedCandidates.length === 0 ? (
-        <div className="p-8 text-center rounded-xl bg-slate-50 border border-dashed border-slate-200 space-y-2">
+        <div className="p-8 text-center rounded-xl bg-slate-50 border border-dashed border-slate-200 space-y-4">
           <FileCheck className="h-8 w-8 text-slate-400 mx-auto" />
-          <h3 className="text-sm font-semibold text-slate-800">No Approved Unpublished Candidates</h3>
-          <p className="text-xs text-slate-500 max-w-md mx-auto">
-            Candidates are generated by the shadow pipeline. When a candidate achieves $\ge 7.5$ quality score and passes deterministic fact checks, it will appear here ready for owner-authorized live publication.
-          </p>
+          <div className="space-y-1">
+            <h3 className="text-sm font-semibold text-slate-800">No Approved Unpublished Candidates</h3>
+            <p className="text-xs text-slate-500 max-w-md mx-auto">
+              Candidates are produced in shadow mode by the autonomous research and fact-checking pipeline. Click below to execute a shadow research cycle right now.
+            </p>
+          </div>
+          <button
+            id="btn-run-shadow-cycle-empty"
+            onClick={handleGenerateShadowCandidate}
+            disabled={isGeneratingShadow}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold text-xs shadow-xs transition cursor-pointer"
+          >
+            <Sparkles className={`h-4 w-4 ${isGeneratingShadow ? 'animate-spin' : ''}`} />
+            <span>{isGeneratingShadow ? 'Synthesizing Shadow Candidate...' : 'Run Shadow Research Cycle'}</span>
+          </button>
         </div>
       ) : null}
 
@@ -630,7 +751,7 @@ export const ControlledPublishDashboard: React.FC<ControlledPublishDashboardProp
                 id="modal-admin-secret-token"
                 type="password"
                 value={adminToken}
-                onChange={(e) => setAdminToken(e.target.value)}
+                onChange={(e) => updateAdminToken(e.target.value)}
                 placeholder="Enter ADMIN_SECRET..."
                 className="w-full text-xs font-mono px-3 py-2 rounded-lg border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-indigo-500"
               />

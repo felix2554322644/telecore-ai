@@ -41,6 +41,16 @@ export default function App() {
   const [scheduler, setScheduler] = useState<SchedulerStatus | null>(null);
   const [feedbackReport, setFeedbackReport] = useState<FeedbackLearningReport | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [adminToken, setAdminTokenState] = useState<string>(() => {
+    return typeof localStorage !== 'undefined' ? localStorage.getItem('telecore_admin_token') || '' : '';
+  });
+
+  const setAdminToken = (token: string) => {
+    setAdminTokenState(token);
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('telecore_admin_token', token);
+    }
+  };
 
   const fetchStatus = async () => {
     setIsLoading(true);
@@ -73,9 +83,18 @@ export default function App() {
         }
       }
 
-      // 3. Fetch Candidates
+      // 3. Fetch Candidates (try public first, or authenticated if token present)
       try {
-        const candRes = await fetch('/api/candidates');
+        const headers: Record<string, string> = {};
+        if (adminToken.trim()) {
+          headers['Authorization'] = `Bearer ${adminToken.trim()}`;
+        }
+        const endpoint = adminToken.trim() ? '/api/admin/candidates' : '/api/candidates';
+        let candRes = await fetch(endpoint, { headers });
+        if (!candRes.ok && adminToken.trim()) {
+          // Fallback to public endpoint
+          candRes = await fetch('/api/candidates');
+        }
         if (candRes.ok) {
           const candData = await candRes.json();
           if (Array.isArray(candData.candidates)) {
@@ -248,6 +267,9 @@ export default function App() {
                 candidates={candidates}
                 onRefresh={fetchStatus}
                 defaultChannel={config?.telegramChannelId || '@techpluseai'}
+                adminToken={adminToken}
+                setAdminToken={setAdminToken}
+                onTriggerShadowCycle={handleTriggerScheduledCycle}
               />
 
               <CandidatesViewer

@@ -11,7 +11,7 @@
  * PublisherAgent, Orchestrator, and Scheduler.
  */
 
-import { isTestMode } from '../config/config.ts';
+import { isAutonomousPublishingAllowed, isTestMode } from '../config/config.ts';
 import {
   AutonomousPublishingState,
   DecisionCategory,
@@ -77,9 +77,10 @@ export class ProductionControlManager {
     }
 
     const defaultChannels = this.env.TELEGRAM_CHANNEL_ID ? [this.env.TELEGRAM_CHANNEL_ID.trim()] : [];
+    const defaultAutonomousState = isAutonomousPublishingAllowed(this.env) ? 'armed' : 'disabled';
     const defaultState: ProductionControlState = {
       killSwitchActive: false,
-      autonomousPublishingState: 'disabled', // Safe default: autonomous publishing requires explicit arming
+      autonomousPublishingState: defaultAutonomousState,
       publicationsThisHour: 0,
       safetyConfig: {
         ...DEFAULT_SAFETY_CONFIG,

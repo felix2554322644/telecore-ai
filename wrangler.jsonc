@@ -20,13 +20,13 @@
   },
 
   // Non-sensitive runtime variables (safe in repository)
-  // NOTE: TELEGRAM_CHANNEL_ID, APP_URL, and secrets are configured via Cloudflare Dashboard
-  // (Settings > Variables and Secrets) or `wrangler secret put`. Do NOT place empty string
-  // placeholders here, as wrangler deployment from GitHub will overwrite dashboard variables.
+  // NOTE: TELEGRAM_TEST_MODE, TELEGRAM_CHANNEL_ID, APP_URL, and secrets are configured via Cloudflare Dashboard
+  // (Settings > Variables and Secrets) or `wrangler secret put`. Do NOT place placeholders or defaults
+  // here that should be owner-controlled, as wrangler deployment from GitHub will overwrite dashboard variables.
+  // When TELEGRAM_TEST_MODE is omitted here, the code safely defaults to true (test mode active).
   "vars": {
     "ENVIRONMENT": "production",
-    "LOG_LEVEL": "info",
-    "TELEGRAM_TEST_MODE": "true"
+    "LOG_LEVEL": "info"
   },
 
   // Required Production Secrets (Configured via `wrangler secret put <NAME>` in Cloudflare):

@@ -237,6 +237,9 @@ export class Orchestrator {
             topic: researchOutput.topic,
             summary: researchOutput.summary,
             decision: strategyResult.data,
+            keyTakeaways: researchOutput.keyTakeaways,
+            suggestedSources: researchOutput.suggestedSources,
+            category: researchOutput.category,
           },
           event.correlationId
         );
@@ -374,6 +377,21 @@ export class Orchestrator {
         },
         event.correlationId
       );
+
+      // If publishing succeeded with a message ID, mark candidate as published
+      if (publishResult.success && publishResult.data?.messageId && this.candidateManager) {
+        try {
+          await this.candidateManager.markCandidatePublished(approvedContent.contentId, {
+            messageId: publishResult.data.messageId,
+            channelId,
+            publishedAt: publishResult.data.publishedAt,
+            publishedBy: 'agent:orchestrator',
+            correlationId: event.correlationId,
+          });
+        } catch (err) {
+          logger.warn('mark_candidate_published_failed', 'Failed to mark candidate published in CandidateManager', { error: err });
+        }
+      }
 
       // Publish content.published event with result metadata
       await this.publish(

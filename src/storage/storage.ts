@@ -125,6 +125,11 @@ export class CloudflareKVStorageAdapter implements IStorage {
 }
 
 /**
+ * Module-level in-memory storage fallback shared across requests in warm isolate
+ */
+const globalInMemoryStorage = new InMemoryStorageAdapter();
+
+/**
  * Storage factory with automatic adapter selection
  */
 export function createStorage(env?: Partial<Env>): IStorage {
@@ -137,5 +142,5 @@ export function createStorage(env?: Partial<Env>): IStorage {
     return new CloudflareKVStorageAdapter(env.STORAGE_KV);
   }
 
-  return new InMemoryStorageAdapter();
+  return globalInMemoryStorage;
 }
